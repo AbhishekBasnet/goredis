@@ -1,0 +1,8 @@
+/bin/
+/goredis
+*.aof
+*.rdb
+*.out
+*.prof
+coverage.*
+.env
