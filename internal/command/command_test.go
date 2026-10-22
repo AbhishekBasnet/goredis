@@ -2,6 +2,7 @@ package command
 
 import (
 	"bytes"
+	"context"
 	"strconv"
 	"strings"
 	"testing"
@@ -92,6 +93,53 @@ func TestCommands(t *testing.T) {
 			{cmd("INCR", "n"), ":2\r\n"},
 			{cmd("TTL", "n"), ":100\r\n"},
 		}},
+		{"lists", []step{
+			{cmd("LPUSH", "l", "a", "b"), ":2\r\n"},
+			{cmd("RPUSH", "l", "c"), ":3\r\n"},
+			{cmd("LRANGE", "l", "0", "-1"), "*3\r\n$1\r\nb\r\n$1\r\na\r\n$1\r\nc\r\n"},
+			{cmd("LRANGE", "l", "5", "10"), "*0\r\n"},
+			{cmd("LRANGE", "nope", "0", "-1"), "*0\r\n"},
+			{cmd("LRANGE", "l", "x", "1"), "-ERR value is not an integer or out of range\r\n"},
+			{cmd("LLEN", "l"), ":3\r\n"},
+			{cmd("LLEN", "nope"), ":0\r\n"},
+			{cmd("LPOP", "l"), "$1\r\nb\r\n"},
+			{cmd("RPOP", "l"), "$1\r\nc\r\n"},
+			{cmd("RPOP", "l"), "$1\r\na\r\n"},
+			{cmd("EXISTS", "l"), ":0\r\n"},
+			{cmd("LPOP", "l"), "$-1\r\n"},
+		}},
+		{"pop count", []step{
+			{cmd("RPUSH", "l", "a", "b", "c"), ":3\r\n"},
+			{cmd("LPOP", "l", "2"), "*2\r\n$1\r\na\r\n$1\r\nb\r\n"},
+			{cmd("LPOP", "l", "0"), "*0\r\n"},
+			{cmd("RPOP", "l", "5"), "*1\r\n$1\r\nc\r\n"},
+			{cmd("LPOP", "l", "1"), "*-1\r\n"},
+			{cmd("LPOP", "l", "-1"), "-ERR value is out of range, must be positive\r\n"},
+			{cmd("LPOP", "l", "x"), "-ERR value is not an integer or out of range\r\n"},
+			{cmd("LPOP", "l", "1", "2"), "-ERR wrong number of arguments for 'lpop' command\r\n"},
+		}},
+		{"wrongtype", []step{
+			{cmd("SET", "s", "v"), "+OK\r\n"},
+			{cmd("RPUSH", "l", "a"), ":1\r\n"},
+			{cmd("LPUSH", "s", "x"), "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"},
+			{cmd("LLEN", "s"), "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"},
+			{cmd("BLPOP", "s", "0"), "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"},
+			{cmd("GET", "l"), "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"},
+			{cmd("INCR", "l"), "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"},
+			{cmd("MGET", "s", "l"), "*2\r\n$1\r\nv\r\n$-1\r\n"},
+			{cmd("SET", "l", "now a string"), "+OK\r\n"},
+			{cmd("GET", "l"), "$12\r\nnow a string\r\n"},
+		}},
+		{"blpop without waiting", []step{
+			{cmd("RPUSH", "b", "1", "2"), ":2\r\n"},
+			{cmd("BLPOP", "a", "b", "0"), "*2\r\n$1\r\nb\r\n$1\r\n1\r\n"},
+			{cmd("BRPOP", "b", "0"), "*2\r\n$1\r\nb\r\n$1\r\n2\r\n"},
+			{cmd("BLPOP", "b", "0.01"), "*-1\r\n"},
+			{cmd("BLPOP", "b", "-1"), "-ERR timeout is negative\r\n"},
+			{cmd("BLPOP", "b", "soon"), "-ERR timeout is not a float or out of range\r\n"},
+			{cmd("BLPOP", "b", "inf"), "-ERR timeout is not a float or out of range\r\n"},
+			{cmd("BLPOP", "b"), "-ERR wrong number of arguments for 'blpop' command\r\n"},
+		}},
 		{"incr decr", []step{
 			{cmd("INCR", "n"), ":1\r\n"},
 			{cmd("INCR", "n"), ":2\r\n"},
@@ -125,7 +173,7 @@ func TestCommands(t *testing.T) {
 			for _, s := range tt.steps {
 				var buf bytes.Buffer
 				w := resp.NewWriter(&buf)
-				r.Dispatch(w, s.args)
+				r.Dispatch(context.Background(), w, s.args)
 				w.Flush()
 				if got := buf.String(); got != s.want {
 					t.Errorf("%q: got %q, want %q", s.args, got, s.want)
@@ -142,7 +190,7 @@ func TestPTTL(t *testing.T) {
 	run := func(args ...string) string {
 		var buf bytes.Buffer
 		w := resp.NewWriter(&buf)
-		r.Dispatch(w, args)
+		r.Dispatch(context.Background(), w, args)
 		w.Flush()
 		return buf.String()
 	}
@@ -152,6 +200,15 @@ func TestPTTL(t *testing.T) {
 	ms, err := strconv.Atoi(got)
 	if err != nil || ms <= 4000 || ms > 5000 {
 		t.Errorf("PTTL = %q, want a value in (4000, 5000]", got)
+	}
+}
+
+func TestBlocks(t *testing.T) {
+	r := NewRegistry(store.New())
+	for name, want := range map[string]bool{"BLPOP": true, "brpop": true, "LPOP": false, "nope": false} {
+		if got := r.Blocks([]string{name}); got != want {
+			t.Errorf("Blocks(%s) = %v, want %v", name, got, want)
+		}
 	}
 }
 

@@ -43,3 +43,19 @@ func parseTTL(s string, unit time.Duration, cmd string) (time.Duration, error) {
 	}
 	return time.Duration(n) * unit, nil
 }
+
+// parseTimeout parses a blocking command's timeout: seconds, possibly with a
+// fraction ("0.5"). Zero means wait forever.
+func parseTimeout(s string) (time.Duration, error) {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, errors.New("ERR timeout is not a float or out of range")
+	}
+	if f < 0 {
+		return 0, errors.New("ERR timeout is negative")
+	}
+	if f > float64(math.MaxInt64/int64(time.Second)) {
+		return 0, errors.New("ERR timeout is out of range")
+	}
+	return time.Duration(f * float64(time.Second)), nil
+}

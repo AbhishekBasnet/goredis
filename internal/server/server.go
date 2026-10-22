@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -8,11 +9,14 @@ import (
 	"github.com/AbhishekBasnet/goredis/internal/resp"
 )
 
-// Dispatcher runs one command and writes its reply. It is defined here,
-// where it is used: the server only needs this one method, and
-// *command.Registry happens to provide it.
+// Dispatcher runs commands. It is defined here, where it is used: the
+// server needs only these two methods, and *command.Registry provides them.
 type Dispatcher interface {
-	Dispatch(w *resp.Writer, args []string)
+	// Dispatch runs one command and writes its reply to w.
+	Dispatch(ctx context.Context, w *resp.Writer, args []string)
+
+	// Blocks reports whether the command may wait for another client.
+	Blocks(args []string) bool
 }
 
 type Server struct {

@@ -21,11 +21,11 @@ func TestSetWithTTL(t *testing.T) {
 	s.Set("k", "v", 10*time.Second)
 
 	advance(9 * time.Second)
-	if _, ok := s.Get("k"); !ok {
+	if _, ok, _ := s.Get("k"); !ok {
 		t.Fatal("key expired early")
 	}
 	advance(time.Second)
-	if _, ok := s.Get("k"); ok {
+	if _, ok, _ := s.Get("k"); ok {
 		t.Fatal("key still readable at its expiry time")
 	}
 	if n := s.Exists("k"); n != 0 {
@@ -44,10 +44,10 @@ func TestSetClearsTTL(t *testing.T) {
 	s.MSet("b", "2")
 
 	advance(time.Hour)
-	if v, ok := s.Get("a"); !ok || v != "2" {
+	if v, ok, _ := s.Get("a"); !ok || v != "2" {
 		t.Error("SET without TTL did not clear the old TTL")
 	}
-	if v, ok := s.Get("b"); !ok || v != "2" {
+	if v, ok, _ := s.Get("b"); !ok || v != "2" {
 		t.Error("MSET did not clear the old TTL")
 	}
 	if len(s.volatile) != 0 {
@@ -101,7 +101,7 @@ func TestExpireTTLPersist(t *testing.T) {
 		t.Error("Persist on a key with TTL returned false")
 	}
 	advance(time.Hour)
-	if _, ok := s.Get("k"); !ok {
+	if _, ok, _ := s.Get("k"); !ok {
 		t.Error("key expired after Persist")
 	}
 }
@@ -112,7 +112,7 @@ func TestExpireNonPositiveDeletes(t *testing.T) {
 	if !s.Expire("k", 0) {
 		t.Error("Expire(0) on an existing key returned false")
 	}
-	if _, ok := s.Get("k"); ok {
+	if _, ok, _ := s.Get("k"); ok {
 		t.Error("Expire(0) did not delete the key")
 	}
 }

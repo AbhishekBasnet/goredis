@@ -13,11 +13,11 @@ import (
 
 // startHandler runs handle on one end of an in-memory connection and returns
 // the other end, plus a channel that is closed when the handler returns.
-func startHandler(t *testing.T) (net.Conn, <-chan struct{}) {
+func startHandler(t *testing.T, st *store.Store) (net.Conn, <-chan struct{}) {
 	t.Helper()
 
 	client, srvConn := net.Pipe()
-	s := New("", slog.New(slog.DiscardHandler), command.NewRegistry(store.New()))
+	s := New("", slog.New(slog.DiscardHandler), command.NewRegistry(st))
 
 	done := make(chan struct{})
 	go func() {
@@ -55,7 +55,7 @@ func TestHandle(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, done := startHandler(t)
+			client, done := startHandler(t, store.New())
 			send(client, tt.input)
 
 			got := make([]byte, len(tt.want))
@@ -79,7 +79,7 @@ func TestHandle(t *testing.T) {
 // After a protocol error the server replies once and closes the connection
 // itself; the PING after the bad header must never be answered.
 func TestHandleProtocolError(t *testing.T) {
-	client, done := startHandler(t)
+	client, done := startHandler(t, store.New())
 	send(client, "*abc\r\nPING\r\n")
 
 	got, err := io.ReadAll(client)
@@ -94,5 +94,56 @@ func TestHandleProtocolError(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("handler did not exit after a protocol error")
+	}
+}
+
+// readExactly reads len(want) bytes and compares them with want.
+func readExactly(t *testing.T, client net.Conn, want string) {
+	t.Helper()
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(client, got); err != nil {
+		t.Fatalf("read: %v (got %q, want %q)", err, got, want)
+	}
+	if string(got) != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A reply to an earlier pipelined command must not wait in the buffer while
+// BLPOP blocks, and the connection must work normally once BLPOP returns.
+func TestBlockingFlushesFirst(t *testing.T) {
+	st := store.New()
+	client, _ := startHandler(t, st)
+	send(client, "PING\r\nBLPOP k 0\r\n")
+
+	// Without the flush before blocking, this read would time out.
+	readExactly(t, client, "+PONG\r\n")
+
+	st.Push("k", false, "v")
+	readExactly(t, client, "*2\r\n$1\r\nk\r\n$1\r\nv\r\n")
+
+	// The watcher's read deadline must have been cleared.
+	send(client, "PING\r\n")
+	readExactly(t, client, "+PONG\r\n")
+}
+
+// A client that hangs up during BLPOP must leave the queue straight away.
+// Otherwise the next push hands it the element, and the element is lost.
+func TestBlockedClientHangsUp(t *testing.T) {
+	st := store.New()
+	client, done := startHandler(t, st)
+	send(client, "PING\r\nBLPOP k 0\r\n")
+	readExactly(t, client, "+PONG\r\n") // BLPOP is now running
+
+	client.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handler stayed blocked after the client hung up")
+	}
+
+	st.Push("k", false, "v")
+	if n, _ := st.LLen("k"); n != 1 {
+		t.Errorf("LLEN = %d, want 1: the element went to the departed client", n)
 	}
 }

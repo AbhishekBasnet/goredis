@@ -13,13 +13,14 @@ import (
 var (
 	ErrNotInteger = errors.New("value is not an integer or out of range")
 	ErrOverflow   = errors.New("increment or decrement would overflow")
+	ErrWrongType  = errors.New("Operation against a key holding the wrong kind of value")
 )
 
 // NoExpiry is what TTL returns for a key that exists but never expires.
 const NoExpiry time.Duration = -1
 
 type entry struct {
-	value     string
+	value     any       // string or *list
 	expiresAt time.Time // zero means the key never expires
 }
 
@@ -47,6 +48,10 @@ type Store struct {
 	// keys that can expire instead of the whole dataset.
 	volatile map[string]struct{}
 
+	// waiters holds the clients blocked in BLPOP/BRPOP on each key, oldest
+	// first (see blocking.go).
+	waiters map[string][]*waiter
+
 	now func() time.Time // time.Now, replaced by a fake clock in tests
 }
 
@@ -54,20 +59,31 @@ func New() *Store {
 	return &Store{
 		data:     make(map[string]entry),
 		volatile: make(map[string]struct{}),
+		waiters:  make(map[string][]*waiter),
 		now:      time.Now,
 	}
 }
 
-func (s *Store) Get(key string) (string, bool) {
+// Get returns the string at key. It fails with ErrWrongType if key holds
+// a list.
+func (s *Store) Get(key string) (string, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	e, ok := s.lookup(key, s.now())
-	return e.value, ok
+	if !ok {
+		return "", false, nil
+	}
+	v, isString := e.value.(string)
+	if !isString {
+		return "", false, ErrWrongType
+	}
+	return v, true, nil
 }
 
-// Set stores value at key. A ttl of 0 means no expiry; like Redis, setting a
-// key always discards any TTL it had before.
+// Set stores value at key, replacing whatever was there, list or string.
+// A ttl of 0 means no expiry; like Redis, setting a key always discards any
+// TTL it had before.
 func (s *Store) Set(key, value string, ttl time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -80,7 +96,8 @@ func (s *Store) Set(key, value string, ttl time.Duration) {
 }
 
 // MGet looks up all keys under one lock, so the result is a consistent
-// snapshot. found[i] reports whether keys[i] exists.
+// snapshot. found[i] reports whether keys[i] holds a string; like Redis,
+// a list counts as not found rather than an error.
 func (s *Store) MGet(keys ...string) (values []string, found []bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -89,9 +106,9 @@ func (s *Store) MGet(keys ...string) (values []string, found []bool) {
 	values = make([]string, len(keys))
 	found = make([]bool, len(keys))
 	for i, k := range keys {
-		var e entry
-		e, found[i] = s.lookup(k, now)
-		values[i] = e.value
+		if e, ok := s.lookup(k, now); ok {
+			values[i], found[i] = e.value.(string)
+		}
 	}
 	return values, found
 }
@@ -149,8 +166,12 @@ func (s *Store) IncrBy(key string, delta int64) (int64, error) {
 	e, ok := s.lookup(key, s.now())
 	var n int64
 	if ok {
+		v, isString := e.value.(string)
+		if !isString {
+			return 0, ErrWrongType
+		}
 		var err error
-		if n, err = parseInt(e.value); err != nil {
+		if n, err = parseInt(v); err != nil {
 			return 0, err
 		}
 	}

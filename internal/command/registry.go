@@ -3,6 +3,8 @@
 package command
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -12,7 +14,10 @@ import (
 
 // Handler runs one command. args[0] is the command name as the client typed
 // it; the registry has already checked the argument count.
-type Handler func(st *store.Store, w *resp.Writer, args []string)
+//
+// ctx is cancelled if the client goes away while a blocking command waits.
+// Handlers that never wait ignore it.
+type Handler func(ctx context.Context, st *store.Store, w *resp.Writer, args []string)
 
 // Command describes one entry in the command table.
 type Command struct {
@@ -24,6 +29,11 @@ type Command struct {
 	Arity int
 
 	Handler Handler
+
+	// Blocking commands can wait for another client (BLPOP). The server
+	// flushes earlier replies before running them and watches for the
+	// client hanging up while they wait.
+	Blocking bool
 }
 
 // Registry is the command table. It is built once at startup and only read
@@ -37,22 +47,31 @@ func NewRegistry(st *store.Store) *Registry {
 	r := &Registry{store: st, cmds: make(map[string]Command)}
 	for _, c := range []Command{
 		// connection.go
-		{"ping", -1, ping},
-		{"echo", 2, echo},
+		{Name: "ping", Arity: -1, Handler: ping},
+		{Name: "echo", Arity: 2, Handler: echo},
 		// strings.go
-		{"get", 2, get},
-		{"set", -3, set},
-		{"incr", 2, incr},
-		{"decr", 2, decr},
-		{"mget", -2, mget},
-		{"mset", -3, mset},
+		{Name: "get", Arity: 2, Handler: get},
+		{Name: "set", Arity: -3, Handler: set},
+		{Name: "incr", Arity: 2, Handler: incr},
+		{Name: "decr", Arity: 2, Handler: decr},
+		{Name: "mget", Arity: -2, Handler: mget},
+		{Name: "mset", Arity: -3, Handler: mset},
 		// keys.go
-		{"del", -2, del},
-		{"exists", -2, exists},
-		{"expire", 3, expire},
-		{"ttl", 2, ttl},
-		{"pttl", 2, pttl},
-		{"persist", 2, persist},
+		{Name: "del", Arity: -2, Handler: del},
+		{Name: "exists", Arity: -2, Handler: exists},
+		{Name: "expire", Arity: 3, Handler: expire},
+		{Name: "ttl", Arity: 2, Handler: ttl},
+		{Name: "pttl", Arity: 2, Handler: pttl},
+		{Name: "persist", Arity: 2, Handler: persist},
+		// lists.go
+		{Name: "lpush", Arity: -3, Handler: lpush},
+		{Name: "rpush", Arity: -3, Handler: rpush},
+		{Name: "lpop", Arity: -2, Handler: lpop},
+		{Name: "rpop", Arity: -2, Handler: rpop},
+		{Name: "llen", Arity: 2, Handler: llen},
+		{Name: "lrange", Arity: 4, Handler: lrange},
+		{Name: "blpop", Arity: -3, Handler: blpop, Blocking: true},
+		{Name: "brpop", Arity: -3, Handler: brpop, Blocking: true},
 	} {
 		r.cmds[c.Name] = c
 	}
@@ -61,7 +80,7 @@ func NewRegistry(st *store.Store) *Registry {
 
 // Dispatch looks up args[0] case-insensitively, checks the argument count
 // and runs the handler. Every outcome, including errors, is written to w.
-func (r *Registry) Dispatch(w *resp.Writer, args []string) {
+func (r *Registry) Dispatch(ctx context.Context, w *resp.Writer, args []string) {
 	cmd, ok := r.cmds[strings.ToLower(args[0])]
 	if !ok {
 		w.WriteError(unknownCommand(args))
@@ -71,7 +90,12 @@ func (r *Registry) Dispatch(w *resp.Writer, args []string) {
 		w.WriteError(fmt.Sprintf("ERR wrong number of arguments for '%s' command", cmd.Name))
 		return
 	}
-	cmd.Handler(r.store, w, args)
+	cmd.Handler(ctx, r.store, w, args)
+}
+
+// Blocks reports whether args is a command that may wait for another client.
+func (r *Registry) Blocks(args []string) bool {
+	return r.cmds[strings.ToLower(args[0])].Blocking
 }
 
 func arityOK(arity, n int) bool {
@@ -90,4 +114,15 @@ func unknownCommand(args []string) string {
 		fmt.Fprintf(&b, "'%s' ", a)
 	}
 	return b.String()
+}
+
+// writeStoreError replies with a store error. The store's texts are Redis's
+// own messages without the error code, which this adds: WRONGTYPE for type
+// mismatches, ERR for everything else.
+func writeStoreError(w *resp.Writer, err error) {
+	code := "ERR "
+	if errors.Is(err, store.ErrWrongType) {
+		code = "WRONGTYPE "
+	}
+	w.WriteError(code + err.Error())
 }

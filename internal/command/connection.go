@@ -1,12 +1,14 @@
 package command
 
 import (
+	"context"
+
 	"github.com/AbhishekBasnet/goredis/internal/resp"
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
 // PING [message]
-func ping(_ *store.Store, w *resp.Writer, args []string) {
+func ping(_ context.Context, _ *store.Store, w *resp.Writer, args []string) {
 	switch len(args) {
 	case 1:
 		w.WriteSimple("PONG")
@@ -18,6 +20,6 @@ func ping(_ *store.Store, w *resp.Writer, args []string) {
 }
 
 // ECHO message
-func echo(_ *store.Store, w *resp.Writer, args []string) {
+func echo(_ context.Context, _ *store.Store, w *resp.Writer, args []string) {
 	w.WriteBulk(args[1])
 }

@@ -1,6 +1,7 @@
 package command
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -11,17 +12,20 @@ import (
 const errSyntax = "ERR syntax error"
 
 // GET key
-func get(st *store.Store, w *resp.Writer, args []string) {
-	v, ok := st.Get(args[1])
-	if !ok {
+func get(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
+	v, ok, err := st.Get(args[1])
+	switch {
+	case err != nil:
+		writeStoreError(w, err)
+	case !ok:
 		w.WriteNull()
-		return
+	default:
+		w.WriteBulk(v)
 	}
-	w.WriteBulk(v)
 }
 
 // SET key value [EX seconds | PX milliseconds]
-func set(st *store.Store, w *resp.Writer, args []string) {
+func set(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	var expiry time.Duration
 	for i := 3; i < len(args); i += 2 {
 		var unit time.Duration
@@ -52,27 +56,26 @@ func set(st *store.Store, w *resp.Writer, args []string) {
 }
 
 // INCR key
-func incr(st *store.Store, w *resp.Writer, args []string) {
+func incr(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	incrBy(st, w, args[1], 1)
 }
 
 // DECR key
-func decr(st *store.Store, w *resp.Writer, args []string) {
+func decr(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	incrBy(st, w, args[1], -1)
 }
 
 func incrBy(st *store.Store, w *resp.Writer, key string, delta int64) {
 	n, err := st.IncrBy(key, delta)
 	if err != nil {
-		// The store's error texts are Redis's own messages.
-		w.WriteError("ERR " + err.Error())
+		writeStoreError(w, err)
 		return
 	}
 	w.WriteInteger(n)
 }
 
 // MGET key [key ...]
-func mget(st *store.Store, w *resp.Writer, args []string) {
+func mget(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	values, found := st.MGet(args[1:]...)
 	w.WriteArray(len(values))
 	for i, v := range values {
@@ -85,7 +88,7 @@ func mget(st *store.Store, w *resp.Writer, args []string) {
 }
 
 // MSET key value [key value ...]
-func mset(st *store.Store, w *resp.Writer, args []string) {
+func mset(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	// Name plus pairs is always odd; the arity rule can't express that.
 	if len(args)%2 == 0 {
 		w.WriteError("ERR wrong number of arguments for 'mset' command")

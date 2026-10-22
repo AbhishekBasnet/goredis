@@ -1,6 +1,7 @@
 package command
 
 import (
+	"context"
 	"time"
 
 	"github.com/AbhishekBasnet/goredis/internal/resp"
@@ -8,19 +9,19 @@ import (
 )
 
 // DEL key [key ...]
-func del(st *store.Store, w *resp.Writer, args []string) {
+func del(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	w.WriteInteger(int64(st.Del(args[1:]...)))
 }
 
 // EXISTS key [key ...]
-func exists(st *store.Store, w *resp.Writer, args []string) {
+func exists(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	w.WriteInteger(int64(st.Exists(args[1:]...)))
 }
 
 // EXPIRE key seconds
 //
 // Replies 1 if the key exists, 0 if not. A zero or negative TTL deletes the key.
-func expire(st *store.Store, w *resp.Writer, args []string) {
+func expire(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	ttl, err := parseTTL(args[2], time.Second, "expire")
 	if err != nil {
 		w.WriteError(err.Error())
@@ -30,12 +31,12 @@ func expire(st *store.Store, w *resp.Writer, args []string) {
 }
 
 // TTL key: seconds left, rounded to the nearest second.
-func ttl(st *store.Store, w *resp.Writer, args []string) {
+func ttl(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	writeTTL(st, w, args[1], time.Second)
 }
 
 // PTTL key: milliseconds left.
-func pttl(st *store.Store, w *resp.Writer, args []string) {
+func pttl(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	writeTTL(st, w, args[1], time.Millisecond)
 }
 
@@ -54,7 +55,7 @@ func writeTTL(st *store.Store, w *resp.Writer, key string, unit time.Duration) {
 }
 
 // PERSIST key: replies 1 if a TTL was removed, 0 otherwise.
-func persist(st *store.Store, w *resp.Writer, args []string) {
+func persist(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	w.WriteInteger(boolInt(st.Persist(args[1])))
 }
 

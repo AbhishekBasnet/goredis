@@ -11,12 +11,12 @@ import (
 
 func TestGetSet(t *testing.T) {
 	s := New()
-	if _, ok := s.Get("k"); ok {
+	if _, ok, _ := s.Get("k"); ok {
 		t.Fatal("Get on empty store found a value")
 	}
 	s.Set("k", "v1", 0)
 	s.Set("k", "v2", 0)
-	if v, ok := s.Get("k"); !ok || v != "v2" {
+	if v, ok, _ := s.Get("k"); !ok || v != "v2" {
 		t.Errorf("Get = %q, %v; want \"v2\", true", v, ok)
 	}
 }
@@ -85,7 +85,7 @@ func TestIncrBy(t *testing.T) {
 			}
 			// A failed increment must leave the old value untouched.
 			if err != nil && tt.initial != "" {
-				if v, _ := s.Get("k"); v != tt.initial {
+				if v, _, _ := s.Get("k"); v != tt.initial {
 					t.Errorf("value changed to %q after error", v)
 				}
 			}
@@ -112,7 +112,7 @@ func TestIncrByConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	if v, _ := s.Get("counter"); v != strconv.Itoa(workers*perWorker) {
+	if v, _, _ := s.Get("counter"); v != strconv.Itoa(workers*perWorker) {
 		t.Errorf("counter = %s, want %d", v, workers*perWorker)
 	}
 }
