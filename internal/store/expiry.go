@@ -47,6 +47,7 @@ func (s *Store) expireSample(n int) (sampled, expired int) {
 		sampled++
 		if s.data[key].expired(now) {
 			s.remove(key)
+			s.record("DEL", key)
 			expired++
 		}
 	}

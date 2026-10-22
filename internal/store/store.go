@@ -30,6 +30,7 @@ type Store struct {
 	data     map[string]entry
 	volatile map[string]struct{}
 	waiters  map[string][]*waiter
+	journal  Journal
 	now      func() time.Time
 }
 
@@ -66,6 +67,7 @@ func (s *Store) Set(key, value string, ttl time.Duration) {
 		e.expiresAt = s.now().Add(ttl)
 	}
 	s.put(key, e)
+	s.recordSet(key, e)
 }
 
 func (s *Store) MGet(keys ...string) (values []string, found []bool) {
@@ -90,6 +92,7 @@ func (s *Store) MSet(pairs ...string) {
 	for i := 0; i+1 < len(pairs); i += 2 {
 		s.put(pairs[i], entry{value: pairs[i+1]})
 	}
+	s.record(append([]string{"MSET"}, pairs...)...)
 }
 
 func (s *Store) Del(keys ...string) int {
@@ -98,11 +101,18 @@ func (s *Store) Del(keys ...string) int {
 
 	now := s.now()
 	n := 0
+	deleted := []string{"DEL"}
 	for _, k := range keys {
 		if _, ok := s.lookup(k, now); ok {
 			n++
 		}
-		s.remove(k)
+		if _, present := s.data[k]; present {
+			s.remove(k)
+			deleted = append(deleted, k)
+		}
+	}
+	if len(deleted) > 1 {
+		s.record(deleted...)
 	}
 	return n
 }
@@ -144,6 +154,7 @@ func (s *Store) IncrBy(key string, delta int64) (int64, error) {
 	n += delta
 	e.value = strconv.FormatInt(n, 10)
 	s.put(key, e)
+	s.recordSet(key, e)
 	return n, nil
 }
 
@@ -154,15 +165,20 @@ func (s *Store) Expire(key string, ttl time.Duration) bool {
 	now := s.now()
 	e, ok := s.lookup(key, now)
 	if !ok {
-		s.remove(key)
+		if _, present := s.data[key]; present {
+			s.remove(key)
+			s.record("DEL", key)
+		}
 		return false
 	}
 	if ttl <= 0 {
 		s.remove(key)
+		s.record("DEL", key)
 		return true
 	}
 	e.expiresAt = now.Add(ttl)
 	s.put(key, e)
+	s.record("PEXPIREAT", key, unixMilli(e.expiresAt))
 	return true
 }
 
@@ -191,6 +207,7 @@ func (s *Store) Persist(key string) bool {
 	}
 	e.expiresAt = time.Time{}
 	s.put(key, e)
+	s.record("PERSIST", key)
 	return true
 }
 

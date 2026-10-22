@@ -26,6 +26,7 @@ func (s *Store) BPop(ctx context.Context, keys []string, front bool, timeout tim
 		}
 		if found {
 			p = Popped{Key: k, Value: l.pop(front)}
+			s.record(popName(front), k)
 			s.dropIfEmpty(k, l)
 			s.mu.Unlock()
 			return p, true, nil
@@ -68,6 +69,7 @@ func (s *Store) serveWaiters(key string, l *list) {
 		w := s.waiters[key][0]
 		s.unregister(w)
 		w.ch <- Popped{Key: key, Value: l.pop(w.front)}
+		s.record(popName(w.front), key)
 	}
 	s.dropIfEmpty(key, l)
 }

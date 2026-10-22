@@ -1,5 +1,7 @@
 package store
 
+import "strconv"
+
 func (s *Store) Push(key string, front bool, values ...string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -9,6 +11,9 @@ func (s *Store) Push(key string, front bool, values ...string) (int, error) {
 		return 0, err
 	}
 	if !ok {
+		if _, stale := s.data[key]; stale {
+			s.record("DEL", key)
+		}
 		l = &list{}
 		s.put(key, entry{value: l})
 	}
@@ -20,6 +25,12 @@ func (s *Store) Push(key string, front bool, values ...string) (int, error) {
 			l.pushBack(v)
 		}
 	}
+	pushName := "RPUSH"
+	if front {
+		pushName = "LPUSH"
+	}
+	s.record(append([]string{pushName, key}, values...)...)
+
 	n := l.len()
 	s.serveWaiters(key, l)
 	return n, nil
@@ -37,6 +48,9 @@ func (s *Store) Pop(key string, front bool, count int) (values []string, exists 
 	values = make([]string, min(count, l.len()))
 	for i := range values {
 		values[i] = l.pop(front)
+	}
+	if len(values) > 0 {
+		s.record(popName(front), key, strconv.Itoa(len(values)))
 	}
 	s.dropIfEmpty(key, l)
 	return values, true, nil
