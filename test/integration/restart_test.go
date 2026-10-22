@@ -71,6 +71,16 @@ type process struct {
 	addr string
 }
 
+func (p *process) logged(msg string) string {
+	for _, line := range strings.Split(p.logs.String(), "\n") {
+		var entry struct{ Msg, Addr string }
+		if json.Unmarshal([]byte(line), &entry) == nil && entry.Msg == msg {
+			return entry.Addr
+		}
+	}
+	return ""
+}
+
 func startBinary(t *testing.T, dir string, flags ...string) *process {
 	t.Helper()
 	logs := &logBuffer{}
@@ -89,12 +99,7 @@ func startBinary(t *testing.T, dir string, flags ...string) *process {
 
 	deadline := time.Now().Add(10 * time.Second)
 	for p.addr == "" {
-		for _, line := range strings.Split(logs.String(), "\n") {
-			var entry struct{ Msg, Addr string }
-			if json.Unmarshal([]byte(line), &entry) == nil && entry.Msg == "listening" {
-				p.addr = entry.Addr
-			}
-		}
+		p.addr = p.logged("listening")
 		if time.Now().After(deadline) {
 			t.Fatalf("server did not start:\n%s", logs)
 		}
