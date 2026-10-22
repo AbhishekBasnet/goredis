@@ -1,4 +1,4 @@
-DEL s n neg l l2 t m1 m2 e p q str list empty
+DEL s n neg l l2 t m1 m2 e p q str list empty big plus
 PING
 PING hello
 ECHO "hello world"

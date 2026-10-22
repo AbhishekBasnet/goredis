@@ -12,8 +12,10 @@ else
 fi
 
 run() {
-	"${cli[@]}" -p "$1" <"$commands"
+	head -n 1 "$commands" | "${cli[@]}" -p "$1" >/dev/null
+	tail -n +2 "$commands" | "${cli[@]}" -p "$1"
 }
 
 diff -u --label "redis :$redis_port" --label "goredis :$goredis_port" \
-	<(run "$redis_port") <(run "$goredis_port") && echo "identical: $(grep -c . "$commands") commands"
+	<(run "$redis_port") <(run "$goredis_port") &&
+	echo "identical: $(tail -n +2 "$commands" | grep -c .) commands (the first line only resets keys)"
