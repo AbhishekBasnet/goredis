@@ -218,3 +218,20 @@ func TestReadCommandBulkSizes(t *testing.T) {
 		}
 	}
 }
+
+func TestAppendArrayMatchesWriter(t *testing.T) {
+	for _, args := range [][]string{{"PING"}, {"SET", "k", "v"}, {"RPUSH", "l", "", "a\r\nb"}, {}} {
+		got := AppendArray([]byte("prefix"), args...)
+		if want := "prefix" + string(encode(args)); string(got) != want {
+			t.Errorf("AppendArray(%q) = %q, want %q", args, got, want)
+		}
+	}
+}
+
+func BenchmarkAppendArray(b *testing.B) {
+	buf := make([]byte, 0, 4096)
+	b.ReportAllocs()
+	for b.Loop() {
+		buf = AppendArray(buf[:0], "SET", "key:000000012345", "xxx")
+	}
+}

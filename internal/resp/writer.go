@@ -70,3 +70,17 @@ func (w *Writer) writeInt(prefix byte, n int64) error {
 	_, err := w.bw.WriteString("\r\n")
 	return err
 }
+
+func AppendArray(dst []byte, args ...string) []byte {
+	dst = append(dst, '*')
+	dst = strconv.AppendInt(dst, int64(len(args)), 10)
+	dst = append(dst, '\r', '\n')
+	for _, a := range args {
+		dst = append(dst, '$')
+		dst = strconv.AppendInt(dst, int64(len(a)), 10)
+		dst = append(dst, '\r', '\n')
+		dst = append(dst, a...)
+		dst = append(dst, '\r', '\n')
+	}
+	return dst
+}
