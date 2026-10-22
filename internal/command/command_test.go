@@ -20,7 +20,7 @@ type step struct {
 func cmd(args ...string) []string { return args }
 
 func newTestRegistry() *Registry {
-	return NewRegistry(store.New(), pubsub.NewBroker(16))
+	return NewRegistry(store.New(), pubsub.NewBroker(16), nil)
 }
 
 type testClient struct {

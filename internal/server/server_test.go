@@ -14,7 +14,7 @@ import (
 )
 
 func newRegistry(st *store.Store) *command.Registry {
-	return command.NewRegistry(st, pubsub.NewBroker(16))
+	return command.NewRegistry(st, pubsub.NewBroker(16), nil)
 }
 
 func startHandler(t *testing.T, reg *command.Registry) (net.Conn, <-chan struct{}) {
@@ -174,7 +174,7 @@ func TestSubscriberHangsUp(t *testing.T) {
 }
 
 func TestSlowSubscriberDisconnected(t *testing.T) {
-	reg := command.NewRegistry(store.New(), pubsub.NewBroker(2))
+	reg := command.NewRegistry(store.New(), pubsub.NewBroker(2), nil)
 	sub, subDone := startHandler(t, reg)
 	pub, _ := startHandler(t, reg)
 

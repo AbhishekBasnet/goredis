@@ -15,11 +15,12 @@ type Client struct {
 	w      *resp.Writer
 	store  *store.Store
 	broker *pubsub.Broker
+	saver  Saver
 	sub    *pubsub.Subscriber
 }
 
 func (r *Registry) NewClient(w *resp.Writer) *Client {
-	return &Client{reg: r, w: w, store: r.store, broker: r.broker}
+	return &Client{reg: r, w: w, store: r.store, broker: r.broker, saver: r.saver}
 }
 
 func (c *Client) Dispatch(ctx context.Context, args []string) {

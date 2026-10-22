@@ -23,11 +23,12 @@ type Command struct {
 type Registry struct {
 	store  *store.Store
 	broker *pubsub.Broker
+	saver  Saver
 	cmds   map[string]Command
 }
 
-func NewRegistry(st *store.Store, broker *pubsub.Broker) *Registry {
-	r := &Registry{store: st, broker: broker, cmds: make(map[string]Command)}
+func NewRegistry(st *store.Store, broker *pubsub.Broker, saver Saver) *Registry {
+	r := &Registry{store: st, broker: broker, saver: saver, cmds: make(map[string]Command)}
 	for _, c := range []Command{
 		{Name: "ping", Arity: -1, Handler: ping, PubSub: true},
 		{Name: "echo", Arity: 2, Handler: echo},
@@ -58,6 +59,9 @@ func NewRegistry(st *store.Store, broker *pubsub.Broker) *Registry {
 		{Name: "subscribe", Arity: -2, Handler: subscribe, PubSub: true},
 		{Name: "unsubscribe", Arity: -1, Handler: unsubscribe, PubSub: true},
 		{Name: "publish", Arity: 3, Handler: publish},
+
+		{Name: "save", Arity: 1, Handler: save},
+		{Name: "bgsave", Arity: 1, Handler: bgsave},
 	} {
 		r.cmds[c.Name] = c
 	}
