@@ -2,6 +2,8 @@ package command
 
 import (
 	"bytes"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/AbhishekBasnet/goredis/internal/resp"
@@ -52,9 +54,43 @@ func TestCommands(t *testing.T) {
 			{cmd("SET", "k"), "-ERR wrong number of arguments for 'set' command\r\n"},
 			{cmd("DEL"), "-ERR wrong number of arguments for 'del' command\r\n"},
 		}},
-		{"set unknown option", []step{
+		{"set options", []step{
 			{cmd("SET", "k", "v", "NX"), "-ERR syntax error\r\n"},
+			{cmd("SET", "k", "v", "EX"), "-ERR syntax error\r\n"},
+			{cmd("SET", "k", "v", "EX", "10", "PX", "100"), "-ERR syntax error\r\n"},
+			{cmd("SET", "k", "v", "EX", "ten"), "-ERR value is not an integer or out of range\r\n"},
+			{cmd("SET", "k", "v", "EX", "0"), "-ERR invalid expire time in 'set' command\r\n"},
+			{cmd("SET", "k", "v", "PX", "-5"), "-ERR invalid expire time in 'set' command\r\n"},
+			{cmd("SET", "k", "v", "EX", "9223372036854775807"), "-ERR invalid expire time in 'set' command\r\n"},
 			{cmd("GET", "k"), "$-1\r\n"},
+			{cmd("SET", "k", "v", "ex", "100"), "+OK\r\n"},
+			{cmd("TTL", "k"), ":100\r\n"},
+			{cmd("SET", "k", "v", "PX", "100000"), "+OK\r\n"},
+			{cmd("TTL", "k"), ":100\r\n"},
+			{cmd("SET", "k", "v"), "+OK\r\n"},
+			{cmd("TTL", "k"), ":-1\r\n"},
+		}},
+		{"expire ttl persist", []step{
+			{cmd("TTL", "k"), ":-2\r\n"},
+			{cmd("PTTL", "k"), ":-2\r\n"},
+			{cmd("EXPIRE", "k", "10"), ":0\r\n"},
+			{cmd("SET", "k", "v"), "+OK\r\n"},
+			{cmd("TTL", "k"), ":-1\r\n"},
+			{cmd("PTTL", "k"), ":-1\r\n"},
+			{cmd("PERSIST", "k"), ":0\r\n"},
+			{cmd("EXPIRE", "k", "50"), ":1\r\n"},
+			{cmd("TTL", "k"), ":50\r\n"},
+			{cmd("PERSIST", "k"), ":1\r\n"},
+			{cmd("TTL", "k"), ":-1\r\n"},
+			{cmd("EXPIRE", "k", "abc"), "-ERR value is not an integer or out of range\r\n"},
+			{cmd("EXPIRE", "k"), "-ERR wrong number of arguments for 'expire' command\r\n"},
+			{cmd("EXPIRE", "k", "-1"), ":1\r\n"},
+			{cmd("EXISTS", "k"), ":0\r\n"},
+		}},
+		{"incr keeps ttl", []step{
+			{cmd("SET", "n", "1", "EX", "100"), "+OK\r\n"},
+			{cmd("INCR", "n"), ":2\r\n"},
+			{cmd("TTL", "n"), ":100\r\n"},
 		}},
 		{"incr decr", []step{
 			{cmd("INCR", "n"), ":1\r\n"},
@@ -96,6 +132,26 @@ func TestCommands(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// PTTL is in milliseconds, so the exact value depends on how long the test
+// took; check that it is in range rather than equal.
+func TestPTTL(t *testing.T) {
+	r := NewRegistry(store.New())
+	run := func(args ...string) string {
+		var buf bytes.Buffer
+		w := resp.NewWriter(&buf)
+		r.Dispatch(w, args)
+		w.Flush()
+		return buf.String()
+	}
+
+	run("SET", "k", "v", "PX", "5000")
+	got := strings.TrimSuffix(strings.TrimPrefix(run("PTTL", "k"), ":"), "\r\n")
+	ms, err := strconv.Atoi(got)
+	if err != nil || ms <= 4000 || ms > 5000 {
+		t.Errorf("PTTL = %q, want a value in (4000, 5000]", got)
 	}
 }
 

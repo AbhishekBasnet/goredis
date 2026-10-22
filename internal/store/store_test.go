@@ -14,8 +14,8 @@ func TestGetSet(t *testing.T) {
 	if _, ok := s.Get("k"); ok {
 		t.Fatal("Get on empty store found a value")
 	}
-	s.Set("k", "v1")
-	s.Set("k", "v2")
+	s.Set("k", "v1", 0)
+	s.Set("k", "v2", 0)
 	if v, ok := s.Get("k"); !ok || v != "v2" {
 		t.Errorf("Get = %q, %v; want \"v2\", true", v, ok)
 	}
@@ -74,7 +74,7 @@ func TestIncrBy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := New()
 			if tt.initial != "" {
-				s.Set("k", tt.initial)
+				s.Set("k", tt.initial, 0)
 			}
 			got, err := s.IncrBy("k", tt.delta)
 			if !errors.Is(err, tt.wantErr) {

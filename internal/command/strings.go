@@ -1,6 +1,9 @@
 package command
 
 import (
+	"strings"
+	"time"
+
 	"github.com/AbhishekBasnet/goredis/internal/resp"
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
@@ -17,16 +20,34 @@ func get(st *store.Store, w *resp.Writer, args []string) {
 	w.WriteBulk(v)
 }
 
-// SET key value
-//
-// The arity is -3 so Stage 4 can add EX/PX options; until then any extra
-// argument is a syntax error, which is also what Redis says for an unknown option.
+// SET key value [EX seconds | PX milliseconds]
 func set(st *store.Store, w *resp.Writer, args []string) {
-	if len(args) > 3 {
-		w.WriteError(errSyntax)
-		return
+	var expiry time.Duration
+	for i := 3; i < len(args); i += 2 {
+		var unit time.Duration
+		switch strings.ToUpper(args[i]) {
+		case "EX":
+			unit = time.Second
+		case "PX":
+			unit = time.Millisecond
+		}
+		// Unknown option, EX and PX together, or an option with no value.
+		if unit == 0 || expiry != 0 || i+1 == len(args) {
+			w.WriteError(errSyntax)
+			return
+		}
+
+		var err error
+		if expiry, err = parseTTL(args[i+1], unit, "set"); err != nil {
+			w.WriteError(err.Error())
+			return
+		}
+		if expiry <= 0 {
+			w.WriteError(invalidExpire("set"))
+			return
+		}
 	}
-	st.Set(args[1], args[2])
+	st.Set(args[1], args[2], expiry)
 	w.WriteSimple("OK")
 }
 

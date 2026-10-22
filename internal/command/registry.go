@@ -49,6 +49,10 @@ func NewRegistry(st *store.Store) *Registry {
 		// keys.go
 		{"del", -2, del},
 		{"exists", -2, exists},
+		{"expire", 3, expire},
+		{"ttl", 2, ttl},
+		{"pttl", 2, pttl},
+		{"persist", 2, persist},
 	} {
 		r.cmds[c.Name] = c
 	}
