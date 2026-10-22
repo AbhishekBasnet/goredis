@@ -1,21 +1,12 @@
 # goredis
 
+[![ci](https://github.com/AbhishekBasnet/goredis/actions/workflows/ci.yml/badge.svg)](https://github.com/AbhishekBasnet/goredis/actions/workflows/ci.yml)
+
 A Redis-compatible key-value server written in Go, using only the standard library.
 
-It speaks the Redis wire protocol (RESP2), so the real `redis-cli`, `redis-benchmark` and any Redis client library can talk to it.
+It speaks the Redis wire protocol (RESP2), so the real `redis-cli`, `redis-benchmark` and any Redis client library can talk to it. Strings, lists with blocking pops, expiry, pub/sub, an append-only file and snapshots, graceful shutdown, `INFO` and Prometheus metrics.
 
-```console
-$ make run
-$ redis-cli -p 6380
-127.0.0.1:6380> SET session:42 alice EX 60
-OK
-127.0.0.1:6380> GET session:42
-"alice"
-127.0.0.1:6380> TTL session:42
-(integer) 60
-127.0.0.1:6380> INCR visits
-(integer) 1
-```
+![redis-cli talking to goredis, then a restart restoring the data from the AOF](assets/demo.gif)
 
 ## Quick start
 
@@ -27,6 +18,15 @@ make build                 # → bin/goredis
 make race                  # every test, under the race detector
 ```
 
+Or with Docker (a 17 MB distroless image, running as non-root):
+
+```bash
+docker build -t goredis .
+docker run -p 6380:6380 -v goredis-data:/data goredis
+```
+
+`docker stop` sends SIGTERM, which triggers the graceful shutdown below; the data in `/data` survives a new container.
+
 | Flag | Default | |
 |---|---|---|
 | `-addr` | `:6380` | listen address |
@@ -36,7 +36,7 @@ make race                  # every test, under the race detector
 | `-maxclients` | `10000` | connection limit, `0` for none |
 | `-timeout` | `0` | close clients idle this long (e.g. `5m`), `0` for never |
 | `-shutdown-grace` | `5s` | how long shutdown waits for busy clients |
-| `-metrics-addr` | off | serve Prometheus metrics, e.g. `:9121` |
+| `-metrics-addr` | off | serve Prometheus `/metrics` and `/debug/pprof`, e.g. `:9121` |
 
 ## Supported commands
 
@@ -51,6 +51,30 @@ make race                  # every test, under the race detector
 | Server | `INFO [section ...]` |
 
 Replies and error messages match Redis exactly, e.g. `ERR wrong number of arguments for 'get' command` and `WRONGTYPE` when a string command meets a list. Both RESP arrays and inline commands (`printf 'PING\r\n' | nc localhost 6380`) are accepted, and pipelining is supported.
+
+## Performance
+
+Measured with the real `redis-benchmark` against Redis 7.4 on the same laptop (50 clients). Full tables, method and caveats are in [`bench/results.md`](bench/results.md).
+
+| | goredis vs Redis |
+|---|---|
+| No persistence, unpipelined | about 70–90% |
+| No persistence, pipelined (`-P 16`) | roughly on par (69%–199% by command) |
+| AOF `everysec`, pipelined writes | 29–78% |
+| AOF `always` | **about 700 writes/s vs Redis's 17k–218k** (no group commit yet) |
+
+- **Profiling found one big hotspot, and I fixed it.** The RESP parser spent 18% of CPU allocating three buffers per argument. Reading small arguments in place took a `SET` from 374 ns and 13 allocations to 157 ns and 4, and cut server CPU per request by 24% (pipelined) and 9% (unpipelined).
+- **The AOF is the known bottleneck.** goredis writes, and with `always` fsyncs, once per command under the store lock, where Redis batches per event-loop iteration. Group commit is the next fix; the design is in the results file.
+
+## Compatibility
+
+`scripts/compat.sh` sends the same 79 commands through the real `redis-cli` to goredis and to Redis 7.4 and diffs the replies: they're byte-identical, error messages included. CI runs it on every push.
+
+```bash
+docker run -d --rm --network host redis:7.4-alpine redis-server --port 6390
+./bin/goredis -appendonly=false &
+make compat
+```
 
 ## Architecture
 
@@ -86,6 +110,8 @@ internal/pubsub   broker: channel → subscribers, slow-subscriber policy
 internal/persistence  AOF writer and loader, atomic snapshots
 internal/stats    counters and one Report for INFO and /metrics
 internal/metrics  Prometheus text endpoint
+scripts/          compat.sh (diff against Redis), bench.sh (redis-benchmark → CSV)
+bench/results.md  benchmark tables and profiling notes
 internal/store    data, locking, expiry
 test/integration  real server on a random port, driven over TCP
 ```
@@ -154,6 +180,10 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 - **Lifecycle:** shutdown wakes idle, blocked and subscribed clients; waits for a command in progress; force-closes after the grace period; client limit and idle timeout; no goroutine leaks after many connect/disconnect cycles; SIGTERM under write load keeps every acknowledged write.
 - **Model test:** the ring buffer is checked against a plain slice over 10,000 random operations.
 - **Integration:** a real server on port 0, driven over TCP with raw RESP, including a 1000-command pipeline.
+- **Compatibility:** 79 commands diffed against real Redis through `redis-cli` (`make compat`).
+- **Benchmarks:** `make bench` for the parser, writer, store and dispatch; `scripts/bench.sh` for `redis-benchmark`.
+
+CI (`.github/workflows/ci.yml`) runs gofmt, vet, the race-enabled tests, 30 s of fuzzing, the compatibility diff against a Redis service container, and the Docker build.
 
 ## Status
 
@@ -166,14 +196,15 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 | Pub/Sub | ✅ |
 | Persistence (AOF, snapshots) | ✅ |
 | Graceful shutdown, client limits, `INFO`, metrics | ✅ |
-| Benchmarks against real Redis, Dockerfile | next |
+| Benchmarks against real Redis, profiling, Dockerfile, CI | ✅ |
 
 ## Known differences from Redis
 
 - `SET` supports `EX` and `PX` only, not `NX`, `XX`, `GET`, `KEEPTTL`, `EXAT` or `PXAT`.
 - `EXPIRE` doesn't accept the Redis 7 `NX`/`XX`/`GT`/`LT` flags.
 - TTLs are capped at about 292 years (the range of `time.Duration`).
-- `COMMAND` isn't implemented. `redis-cli` asks for it on startup, gets an error and carries on.
+- `COMMAND` and `CONFIG` aren't implemented. `redis-cli` asks for `COMMAND` on startup and `redis-benchmark` for `CONFIG`; both carry on after the error.
+- No `INCRBY`, `DECRBY`, `APPEND`, `STRLEN`, `GETSET`, `KEYS`, `SCAN`, `FLUSHALL`.
 - No `LINSERT`, `LSET`, `LREM`, `LTRIM`, `LINDEX`, `BLMOVE`.
 - A client blocked in `BLPOP` that sends more commands before hanging up is noticed only when the `BLPOP` returns.
 - No pattern subscriptions (`PSUBSCRIBE`), sharded pub/sub, `PUBSUB` introspection, `QUIT` or `RESET`.
@@ -182,4 +213,5 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 - The snapshot format is RESP commands, not Redis's binary RDB.
 - `INFO` has fewer fields than Redis's, and `used_memory` is the Go heap, not RSS.
 - A command that ignored its context and never returned would hold up shutdown; every real command waits only on the network or on `BLPOP`, both of which shutdown interrupts.
+- With the AOF on, writes are much slower than Redis's, especially with `appendfsync always`: no group commit (see Performance).
 - Write errors on the AOF are logged and stop further logging; Redis would refuse writes (`MISCONF`) instead.
