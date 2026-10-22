@@ -4,6 +4,7 @@ package integration
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -27,9 +28,16 @@ func startServer(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := server.New(ln.Addr().String(), slog.New(slog.DiscardHandler), command.NewRegistry(store.New()))
+	st := store.New()
+	ctx, cancel := context.WithCancel(context.Background())
+	go st.RunExpiry(ctx, 10*time.Millisecond)
+
+	srv := server.New(ln.Addr().String(), slog.New(slog.DiscardHandler), command.NewRegistry(st))
 	go srv.Serve(ln)
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() {
+		ln.Close()
+		cancel()
+	})
 	return ln.Addr().String()
 }
 
