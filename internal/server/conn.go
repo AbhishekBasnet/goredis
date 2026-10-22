@@ -2,10 +2,8 @@ package server
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"net"
-	"strings"
 
 	"github.com/AbhishekBasnet/goredis/internal/resp"
 )
@@ -34,7 +32,7 @@ func (s *Server) handle(conn net.Conn) {
 			return
 		}
 
-		dispatch(w, args)
+		s.cmds.Dispatch(w, args)
 
 		// Pipelining: if the client already sent more commands, answer those
 		// too before flushing, so a batch of N commands costs one write
@@ -45,33 +43,4 @@ func (s *Server) handle(conn net.Conn) {
 			}
 		}
 	}
-}
-
-// dispatch runs one command. It is a stand-in until Stage 3 adds the
-// command registry.
-func dispatch(w *resp.Writer, args []string) {
-	switch strings.ToUpper(args[0]) {
-	case "PING":
-		switch len(args) {
-		case 1:
-			w.WriteSimple("PONG")
-		case 2:
-			w.WriteBulk(args[1])
-		default:
-			w.WriteError("ERR wrong number of arguments for 'ping' command")
-		}
-	default:
-		w.WriteError(unknownCommand(args))
-	}
-}
-
-// unknownCommand builds the same message Redis sends, e.g.
-// ERR unknown command 'FOO', with args beginning with: 'a' 'b'
-func unknownCommand(args []string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "ERR unknown command '%s', with args beginning with: ", args[0])
-	for _, a := range args[1:] {
-		fmt.Fprintf(&b, "'%s' ", a)
-	}
-	return b.String()
 }

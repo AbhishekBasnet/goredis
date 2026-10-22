@@ -5,7 +5,9 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/AbhishekBasnet/goredis/internal/command"
 	"github.com/AbhishekBasnet/goredis/internal/server"
+	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
 func main() {
@@ -13,7 +15,8 @@ func main() {
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	srv := server.New(*addr, log)
+	cmds := command.NewRegistry(store.New())
+	srv := server.New(*addr, log, cmds)
 
 	if err := srv.Run(); err != nil {
 		log.Error("server stopped", "err", err)

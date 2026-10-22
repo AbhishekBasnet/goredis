@@ -6,6 +6,9 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/AbhishekBasnet/goredis/internal/command"
+	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
 // startHandler runs handle on one end of an in-memory connection and returns
@@ -14,7 +17,7 @@ func startHandler(t *testing.T) (net.Conn, <-chan struct{}) {
 	t.Helper()
 
 	client, srvConn := net.Pipe()
-	s := New("", slog.New(slog.DiscardHandler))
+	s := New("", slog.New(slog.DiscardHandler), command.NewRegistry(store.New()))
 
 	done := make(chan struct{})
 	go func() {
