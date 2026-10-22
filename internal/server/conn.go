@@ -34,6 +34,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	}()
 
 	pumping := false
+	var mustWait bool
 	for {
 		if !s.readyToRead(ctx, conn, sess) {
 			return
@@ -45,7 +46,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				s.log.Warn("protocol error", "remote", remote, "err", err)
 				wmu.Lock()
 				w.WriteError("ERR " + err.Error())
-				w.Flush()
+				s.flushDurable(w, &mustWait)
 				wmu.Unlock()
 			case errors.Is(err, os.ErrDeadlineExceeded) && ctx.Err() == nil:
 				s.log.Info("closing idle client", "remote", remote, "idle", s.cfg.IdleTimeout)
@@ -56,8 +57,9 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		}
 
 		wmu.Lock()
+		before := s.appendSeq()
 		if sess.Blocks(args) {
-			if err = w.Flush(); err == nil {
+			if err = s.flushDurable(w, &mustWait); err == nil {
 				runBlocking(ctx, conn, r, func(ctx context.Context) {
 					sess.Dispatch(ctx, args)
 				})
@@ -65,8 +67,11 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		} else {
 			sess.Dispatch(ctx, args)
 		}
+		if s.appendSeq() != before {
+			mustWait = true
+		}
 		if err == nil && r.Buffered() == 0 {
-			err = w.Flush()
+			err = s.flushDurable(w, &mustWait)
 		}
 		wmu.Unlock()
 		if err != nil {
@@ -86,6 +91,23 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			})
 		}
 	}
+}
+
+func (s *Server) appendSeq() uint64 {
+	if s.cfg.AppendLog == nil {
+		return 0
+	}
+	return s.cfg.AppendLog.Seq()
+}
+
+func (s *Server) flushDurable(w *resp.Writer, mustWait *bool) error {
+	if *mustWait {
+		*mustWait = false
+		if err := s.cfg.AppendLog.WaitFor(s.cfg.AppendLog.Seq()); err != nil {
+			s.log.Debug("reply sent without a durable AOF entry", "err", err)
+		}
+	}
+	return w.Flush()
 }
 
 func (s *Server) readyToRead(ctx context.Context, conn net.Conn, sess Session) bool {

@@ -1,7 +1,6 @@
 package persistence
 
 import (
-	"context"
 	"errors"
 	"log/slog"
 	"os"
@@ -66,7 +65,7 @@ func TestAOFRoundTrip(t *testing.T) {
 	}
 }
 
-func TestAppendWritesThroughToTheOS(t *testing.T) {
+func TestWaitForMeansWritten(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "appendonly.aof")
 	a, err := OpenAOF(path, FsyncNo, discard)
 	if err != nil {
@@ -75,8 +74,11 @@ func TestAppendWritesThroughToTheOS(t *testing.T) {
 	defer a.Close()
 
 	a.Append("SET", "k", "v")
+	if err := a.WaitFor(a.Seq()); err != nil {
+		t.Fatal(err)
+	}
 	if got, _ := collect(t, LoadAOF, path); len(got) != 1 {
-		t.Errorf("before Close the file holds %d commands, want 1", len(got))
+		t.Errorf("after WaitFor the file holds %d commands, want 1", len(got))
 	}
 }
 
@@ -167,27 +169,19 @@ func TestParseFsync(t *testing.T) {
 	}
 }
 
-func TestRunStopsOnCancel(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "appendonly.aof")
-	for _, policy := range []Fsync{FsyncEverySec, FsyncAlways} {
-		a, err := OpenAOF(path, policy, discard)
+func TestCloseStopsTheFlusher(t *testing.T) {
+	for _, policy := range []Fsync{FsyncAlways, FsyncEverySec, FsyncNo} {
+		a, err := OpenAOF(filepath.Join(t.TempDir(), "appendonly.aof"), policy, discard)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() {
-			a.Run(ctx)
-			close(done)
-		}()
 		a.Append("SET", "k", "v")
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatalf("%s: Run did not return after cancel", policy)
-		}
 		a.Close()
+		select {
+		case <-a.done:
+		case <-time.After(time.Second):
+			t.Fatalf("%s: flusher still running after Close", policy)
+		}
 	}
 }
 

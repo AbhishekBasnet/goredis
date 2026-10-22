@@ -87,9 +87,6 @@ func main() {
 
 	var bg sync.WaitGroup
 	bg.Go(func() { st.RunExpiry(ctx, store.DefaultExpiryInterval) })
-	if aof != nil {
-		bg.Go(func() { aof.Run(ctx) })
-	}
 
 	var metricsSrv *http.Server
 	if *metricsAddr != "" {
@@ -115,12 +112,16 @@ func main() {
 	}
 
 	cmds := command.NewRegistry(command.Config{Store: st, Broker: broker, Saver: snaps, Counters: counters, Info: collect})
-	srv := server.New(*addr, log, func(w *resp.Writer) server.Session { return cmds.NewClient(w) }, server.Config{
+	srvCfg := server.Config{
 		MaxClients:    *maxClients,
 		IdleTimeout:   *timeout,
 		ShutdownGrace: *grace,
 		Counters:      counters,
-	})
+	}
+	if aof != nil {
+		srvCfg.AppendLog = aof
+	}
+	srv := server.New(*addr, log, func(w *resp.Writer) server.Session { return cmds.NewClient(w) }, srvCfg)
 
 	code := 0
 	if err := srv.Run(ctx); err != nil {

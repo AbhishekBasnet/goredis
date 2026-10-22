@@ -21,11 +21,17 @@ type Session interface {
 	Close()
 }
 
+type AppendLog interface {
+	Seq() uint64
+	WaitFor(seq uint64) error
+}
+
 type Config struct {
 	MaxClients    int
 	IdleTimeout   time.Duration
 	ShutdownGrace time.Duration
 	Counters      *stats.Counters
+	AppendLog     AppendLog
 }
 
 const DefaultShutdownGrace = 5 * time.Second
