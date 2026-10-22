@@ -34,8 +34,9 @@ make race                  # every test, under the race detector
 | Connection | `PING [message]`, `ECHO message` |
 | Strings | `GET`, `SET key value [EX seconds \| PX milliseconds]`, `MGET`, `MSET`, `INCR`, `DECR` |
 | Keys | `DEL`, `EXISTS`, `EXPIRE`, `TTL`, `PTTL`, `PERSIST` |
+| Lists | `LPUSH`, `RPUSH`, `LPOP [count]`, `RPOP [count]`, `LLEN`, `LRANGE`, `BLPOP`, `BRPOP` |
 
-Replies and error messages match Redis exactly, e.g. `ERR wrong number of arguments for 'get' command`. Both RESP arrays and inline commands (`printf 'PING\r\n' | nc localhost 6380`) are accepted, and pipelining is supported.
+Replies and error messages match Redis exactly, e.g. `ERR wrong number of arguments for 'get' command` and `WRONGTYPE` when a string command meets a list. Both RESP arrays and inline commands (`printf 'PING\r\n' | nc localhost 6380`) are accepted, and pipelining is supported.
 
 ## Architecture
 
@@ -46,8 +47,9 @@ flowchart LR
     subgraph goredis
         A["server<br/>accept loop"] -->|"go handle(conn)<br/>one per client"| H["connection loop<br/>resp.Reader → Dispatch → resp.Writer"]
         H --> R["command.Registry<br/>name → arity, handler"]
-        R --> S[("store<br/>map + sync.RWMutex")]
+        R --> S[("store<br/>map + sync.RWMutex<br/>strings · lists")]
         E["active expiry<br/>goroutine, 100ms ticker"] --> S
+        S -- "hand-off via<br/>1-slot channel" --> B["clients blocked<br/>in BLPOP"]
     end
 
     SIG["SIGINT / SIGTERM"] -. "context cancel" .-> E
@@ -83,6 +85,12 @@ Dependencies point one way: `server → resp`, `command → resp, store`. `serve
 - *Active:* lazy expiry alone would leave keys nobody reads in memory forever. A background goroutine wakes every 100ms, samples 20 keys from an index of keys that have a TTL, and deletes the expired ones. If more than 25% were expired it samples again, up to 16 rounds. The lock is taken once per round, so clients get a turn in between.
 - The goroutine stops when its `context` is cancelled; `main` cancels it on SIGINT or SIGTERM and waits for it to return.
 
+**Blocking pops hand values over; they don't wake clients to race for them.** A client in `BLPOP` on empty lists queues a waiter, with a 1-slot channel, on each key and waits in a `select` on that channel, a timer and its context. A push, still under the lock, pops the element and sends it straight to the longest-waiting client, removing that client from every queue first. Nobody is woken to compete for an element that someone else may already have taken, so an element can't be lost or delivered twice, and clients are served in FIFO order. `sync.Cond` was the alternative. It has no timed wait, and `Broadcast` wakes every waiter just so all but one can go back to sleep.
+
+**A blocked client that hangs up leaves the queue.** Nothing reads the socket while `BLPOP` waits, so the connection starts a watcher goroutine that waits for the next byte. EOF cancels the command's context, which removes the waiter. Without this, the next push would hand its element to a dead connection.
+
+**Typed values.** Each entry holds `any`: a `string` or a `*list`. A type assertion decides between returning the value and `WRONGTYPE`. Lists are ring-buffer deques: O(1) at both ends, and O(1) indexing for `LRANGE`. An empty list deletes its key, as in Redis.
+
 **Testable time.** The store reads the time through a `now func() time.Time` field. Expiry unit tests swap in a fake clock and move it forward, so they're exact and never sleep.
 
 ## Testing
@@ -96,6 +104,8 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 - **Partial reads:** the reader is tested with `iotest.OneByteReader`, the worst possible TCP fragmentation.
 - **Fuzz:** random input must never panic, and anything accepted must survive an encode → parse round trip.
 - **Concurrency:** 100 goroutines (store) and 100 TCP clients (integration) `INCR` one key; the count must be exact.
+- **Producers/consumers:** many pushers and many `BLPOP` consumers, in-process and over TCP; every element must arrive exactly once.
+- **Model test:** the ring buffer is checked against a plain slice over 10,000 random operations.
 - **Integration:** a real server on port 0, driven over TCP with raw RESP, including a 1000-command pipeline.
 
 ## Status
@@ -105,8 +115,8 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 | TCP server, RESP protocol, pipelining | ✅ |
 | Command registry, string commands | ✅ |
 | Expiry (lazy + active) | ✅ |
-| Lists and blocking `BLPOP` | next |
-| Pub/Sub | planned |
+| Lists and blocking `BLPOP` | ✅ |
+| Pub/Sub | next |
 | Persistence (AOF, snapshots) | planned |
 | Graceful shutdown, client limits, `INFO` | planned |
 | Benchmarks against real Redis, Dockerfile | planned |
@@ -117,4 +127,6 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 - `EXPIRE` doesn't accept the Redis 7 `NX`/`XX`/`GT`/`LT` flags.
 - TTLs are capped at about 292 years (the range of `time.Duration`).
 - `COMMAND` isn't implemented. `redis-cli` asks for it on startup, gets an error and carries on.
+- No `LINSERT`, `LSET`, `LREM`, `LTRIM`, `LINDEX`, `BLMOVE`.
+- A client blocked in `BLPOP` that sends more commands before hanging up is noticed only when the `BLPOP` returns.
 - Data lives in memory only, for now.
