@@ -137,3 +137,55 @@ func TestInfoAndMetrics(t *testing.T) {
 	}
 	p.stop(t)
 }
+
+func TestKillDashNineUnderConcurrentWritesKeepsAcknowledgedWrites(t *testing.T) {
+	const writers = 16
+	for _, policy := range []string{"always", "everysec", "no"} {
+		t.Run(policy, func(t *testing.T) {
+			dir := t.TempDir()
+			p := startBinary(t, dir, "-appendfsync", policy)
+
+			acked := make([]int, writers)
+			var wg sync.WaitGroup
+			for i := range writers {
+				conn, err := net.Dial("tcp", p.addr)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer conn.Close()
+				wg.Go(func() {
+					r := bufio.NewReader(conn)
+					for n := 0; ; n++ {
+						key, val := fmt.Sprintf("w%d-%d", i, n), fmt.Sprint(n)
+						fmt.Fprintf(conn, "*3\r\n$3\r\nSET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(val), val)
+						if line, err := r.ReadString('\n'); err != nil || line != "+OK\r\n" {
+							return
+						}
+						acked[i] = n + 1
+					}
+				})
+			}
+
+			time.Sleep(300 * time.Millisecond)
+			p.kill(t)
+			wg.Wait()
+
+			p = startBinary(t, dir)
+			c := dial(t, p.addr)
+			total := 0
+			for i, n := range acked {
+				total += n
+				for k := max(0, n-20); k < n; k++ {
+					if got, want := c.do("GET", fmt.Sprintf("w%d-%d", i, k)), fmt.Sprintf(`"%d"`, k); got != want {
+						t.Errorf("writer %d, acknowledged write %d of %d: got %s", i, k, n, got)
+					}
+				}
+			}
+			if total < writers {
+				t.Fatalf("only %d writes acknowledged", total)
+			}
+			t.Logf("%d acknowledged writes in 300ms", total)
+			p.stop(t)
+		})
+	}
+}
