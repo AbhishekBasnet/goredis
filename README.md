@@ -35,6 +35,7 @@ make race                  # every test, under the race detector
 | Strings | `GET`, `SET key value [EX seconds \| PX milliseconds]`, `MGET`, `MSET`, `INCR`, `DECR` |
 | Keys | `DEL`, `EXISTS`, `EXPIRE`, `TTL`, `PTTL`, `PERSIST` |
 | Lists | `LPUSH`, `RPUSH`, `LPOP [count]`, `RPOP [count]`, `LLEN`, `LRANGE`, `BLPOP`, `BRPOP` |
+| Pub/Sub | `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH` |
 
 Replies and error messages match Redis exactly, e.g. `ERR wrong number of arguments for 'get' command` and `WRONGTYPE` when a string command meets a list. Both RESP arrays and inline commands (`printf 'PING\r\n' | nc localhost 6380`) are accepted, and pipelining is supported.
 
@@ -46,7 +47,10 @@ flowchart LR
 
     subgraph goredis
         A["server<br/>accept loop"] -->|"go handle(conn)<br/>one per client"| H["connection loop<br/>resp.Reader → Dispatch → resp.Writer"]
-        H --> R["command.Registry<br/>name → arity, handler"]
+        H --> R["command.Client<br/>per connection: table lookup,<br/>arity, subscribe mode"]
+        R --> PB[("pubsub.Broker<br/>channel → subscribers")]
+        PB -- "non-blocking send<br/>into buffered chan" --> PU["pump goroutine<br/>per subscriber"]
+        PU --> H
         R --> S[("store<br/>map + sync.RWMutex<br/>strings · lists")]
         E["active expiry<br/>goroutine, 100ms ticker"] --> S
         S -- "hand-off via<br/>1-slot channel" --> B["clients blocked<br/>in BLPOP"]
@@ -59,12 +63,13 @@ flowchart LR
 cmd/goredis/      flags, wiring, signal handling, nothing else
 internal/resp     RESP2 reader and writer; depends only on io.Reader/io.Writer
 internal/server   TCP listener, one goroutine per connection, flush policy
-internal/command  command table and handlers
+internal/command  command table, per-connection Client, handlers
+internal/pubsub   broker: channel → subscribers, slow-subscriber policy
 internal/store    data, locking, expiry
 test/integration  real server on a random port, driven over TCP
 ```
 
-Dependencies point one way: `server → resp`, `command → resp, store`. `server` doesn't import `command`; it declares a one-method `Dispatcher` interface, and `main` wires the two together.
+Dependencies point one way: `server → resp, pubsub`, `command → resp, store, pubsub`. `server` doesn't import `command`. It declares the small `Session` interface it needs, `*command.Client` satisfies it, and `main` passes a one-line adapter closure that wires the two together.
 
 ## Design decisions
 
@@ -91,6 +96,10 @@ Dependencies point one way: `server → resp`, `command → resp, store`. `serve
 
 **Typed values.** Each entry holds `any`: a `string` or a `*list`. A type assertion decides between returning the value and `WRONGTYPE`. Lists are ring-buffer deques: O(1) at both ends, and O(1) indexing for `LRANGE`. An empty list deletes its key, as in Redis.
 
+**Pub/Sub: publishers never wait for subscribers.** Each subscriber has a buffered channel (1024 messages). `PUBLISH` does a non-blocking send to every subscriber of the channel. If one subscriber's buffer is full, that subscriber is disconnected, the same policy as Redis's pub/sub output-buffer limit, so one stalled client can't slow down the publisher or anyone else. Dropping messages silently was the alternative; disconnecting is louder, and the client can reconnect and resync.
+
+**One writer at a time per connection.** A subscribed connection has two writers: the command loop (subscribe confirmations, `PING`) and a pump goroutine (pushed messages). A per-connection mutex serialises them, and each takes the lock around a whole reply, so their bytes never interleave. A separate goroutine waits for the "kicked" signal and closes the socket. That also unblocks a pump stuck writing to a client that stopped reading.
+
 **Testable time.** The store reads the time through a `now func() time.Time` field. Expiry unit tests swap in a fake clock and move it forward, so they're exact and never sleep.
 
 ## Testing
@@ -105,6 +114,7 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 - **Fuzz:** random input must never panic, and anything accepted must survive an encode → parse round trip.
 - **Concurrency:** 100 goroutines (store) and 100 TCP clients (integration) `INCR` one key; the count must be exact.
 - **Producers/consumers:** many pushers and many `BLPOP` consumers, in-process and over TCP; every element must arrive exactly once.
+- **Pub/Sub:** fan-out to 20 subscribers over TCP in order; a subscriber that never reads is disconnected while publishers keep going; subscriptions disappear when the connection does.
 - **Model test:** the ring buffer is checked against a plain slice over 10,000 random operations.
 - **Integration:** a real server on port 0, driven over TCP with raw RESP, including a 1000-command pipeline.
 
@@ -116,8 +126,8 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 | Command registry, string commands | ✅ |
 | Expiry (lazy + active) | ✅ |
 | Lists and blocking `BLPOP` | ✅ |
-| Pub/Sub | next |
-| Persistence (AOF, snapshots) | planned |
+| Pub/Sub | ✅ |
+| Persistence (AOF, snapshots) | next |
 | Graceful shutdown, client limits, `INFO` | planned |
 | Benchmarks against real Redis, Dockerfile | planned |
 
@@ -129,4 +139,6 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 - `COMMAND` isn't implemented. `redis-cli` asks for it on startup, gets an error and carries on.
 - No `LINSERT`, `LSET`, `LREM`, `LTRIM`, `LINDEX`, `BLMOVE`.
 - A client blocked in `BLPOP` that sends more commands before hanging up is noticed only when the `BLPOP` returns.
+- No pattern subscriptions (`PSUBSCRIBE`), sharded pub/sub, `PUBSUB` introspection, `QUIT` or `RESET`.
+- `PUBLISH` counts only subscribers that accepted the message; one that was just disconnected for being slow isn't counted.
 - Data lives in memory only, for now.
