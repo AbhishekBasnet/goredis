@@ -27,6 +27,13 @@ make build                 # → bin/goredis
 make race                  # every test, under the race detector
 ```
 
+| Flag | Default | |
+|---|---|---|
+| `-addr` | `:6380` | listen address |
+| `-dir` | `.` | where `appendonly.aof` and `dump.resp` live |
+| `-appendonly` | `true` | log every write to the AOF |
+| `-appendfsync` | `everysec` | `always`, `everysec` or `no` |
+
 ## Supported commands
 
 | Group | Commands |
@@ -36,6 +43,7 @@ make race                  # every test, under the race detector
 | Keys | `DEL`, `EXISTS`, `EXPIRE`, `TTL`, `PTTL`, `PERSIST` |
 | Lists | `LPUSH`, `RPUSH`, `LPOP [count]`, `RPOP [count]`, `LLEN`, `LRANGE`, `BLPOP`, `BRPOP` |
 | Pub/Sub | `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH` |
+| Persistence | `SAVE`, `BGSAVE` |
 
 Replies and error messages match Redis exactly, e.g. `ERR wrong number of arguments for 'get' command` and `WRONGTYPE` when a string command meets a list. Both RESP arrays and inline commands (`printf 'PING\r\n' | nc localhost 6380`) are accepted, and pipelining is supported.
 
@@ -53,6 +61,8 @@ flowchart LR
         PU --> H
         R --> S[("store<br/>map + sync.RWMutex<br/>strings · lists")]
         E["active expiry<br/>goroutine, 100ms ticker"] --> S
+        S -- "journal: effects,<br/>under the store lock" --> AOF[("appendonly.aof")]
+        S -- "Dump() → temp file → rename" --> SNAP[("dump.resp")]
         S -- "hand-off via<br/>1-slot channel" --> B["clients blocked<br/>in BLPOP"]
     end
 
@@ -65,6 +75,7 @@ internal/resp     RESP2 reader and writer; depends only on io.Reader/io.Writer
 internal/server   TCP listener, one goroutine per connection, flush policy
 internal/command  command table, per-connection Client, handlers
 internal/pubsub   broker: channel → subscribers, slow-subscriber policy
+internal/persistence  AOF writer and loader, atomic snapshots
 internal/store    data, locking, expiry
 test/integration  real server on a random port, driven over TCP
 ```
@@ -100,6 +111,14 @@ Dependencies point one way: `server → resp, pubsub`, `command → resp, store,
 
 **One writer at a time per connection.** A subscribed connection has two writers: the command loop (subscribe confirmations, `PING`) and a pump goroutine (pushed messages). A per-connection mutex serialises them, and each takes the lock around a whole reply, so their bytes never interleave. A separate goroutine waits for the "kicked" signal and closes the socket. That also unblocks a pump stuck writing to a client that stopped reading.
 
+**The store writes the AOF, not the command layer.** Logging commands after they run has three bugs: two concurrent `SET`s can reach the file in the opposite order to the one the store applied; an element handed to a blocked `BLPOP` never shows up as removed; and `EXPIRE k 10` replayed tomorrow gives the key 10 more seconds. So every store mutation records its *effect* through a `Journal`, while still holding the store's lock: TTLs as absolute times (`SET k v PXAT ms`, `PEXPIREAT`), `INCR` as the `SET` of its result, a served `BLPOP` as an `LPOP`, and every removal of an expired key as a `DEL`, as Redis does. The AOF order is therefore exactly the order of changes. A model test runs thousands of random operations (with clock jumps and expiry), replays the journal into a fresh store, and requires an identical dataset.
+
+**Replay is raw.** Loading applies journal entries straight to the data, ignoring expiry until it's done, because whether a key was alive was decided when the entry was written, not when it's replayed.
+
+**AOF durability.** Each entry reaches the OS (`write`) before the client's reply, so a crashed process (`kill -9`) loses nothing it acknowledged. `appendfsync` decides when the OS is forced to disk: on every write, once a second from a background goroutine (the fsync happens outside the AOF lock, so writers don't stall), or never. On startup, a last command cut off mid-write is detected and truncated away; corruption anywhere else refuses to start rather than guessing.
+
+**Snapshots don't block clients.** `Dump()` copies the dataset as commands under a brief read lock; writing the file happens outside any lock (in a goroutine for `BGSAVE`). Writes go to a temp file, then `fsync`, `rename` over the old snapshot and `fsync` the directory, so a crash leaves either the old snapshot or the new one, never half of one. The snapshot format is the same RESP commands as the AOF, so both load through the same code. With the AOF on, it's the source of truth; when the AOF is first enabled on top of a snapshot, it's seeded from the snapshot.
+
 **Testable time.** The store reads the time through a `now func() time.Time` field. Expiry unit tests swap in a fake clock and move it forward, so they're exact and never sleep.
 
 ## Testing
@@ -115,6 +134,7 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 - **Concurrency:** 100 goroutines (store) and 100 TCP clients (integration) `INCR` one key; the count must be exact.
 - **Producers/consumers:** many pushers and many `BLPOP` consumers, in-process and over TCP; every element must arrive exactly once.
 - **Pub/Sub:** fan-out to 20 subscribers over TCP in order; a subscriber that never reads is disconnected while publishers keep going; subscriptions disappear when the connection does.
+- **Persistence:** journal replay against a model (1M random ops checked); every truncation point of an AOF recovers a clean prefix; the real binary is restarted with clean shutdown and `kill -9`, with a served `BLPOP`, a truncated tail, a corrupt file, snapshots only and switching from snapshots to the AOF.
 - **Model test:** the ring buffer is checked against a plain slice over 10,000 random operations.
 - **Integration:** a real server on port 0, driven over TCP with raw RESP, including a 1000-command pipeline.
 
@@ -127,8 +147,8 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 | Expiry (lazy + active) | ✅ |
 | Lists and blocking `BLPOP` | ✅ |
 | Pub/Sub | ✅ |
-| Persistence (AOF, snapshots) | next |
-| Graceful shutdown, client limits, `INFO` | planned |
+| Persistence (AOF, snapshots) | ✅ |
+| Graceful shutdown, client limits, `INFO` | next |
 | Benchmarks against real Redis, Dockerfile | planned |
 
 ## Known differences from Redis
@@ -141,4 +161,6 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 - A client blocked in `BLPOP` that sends more commands before hanging up is noticed only when the `BLPOP` returns.
 - No pattern subscriptions (`PSUBSCRIBE`), sharded pub/sub, `PUBSUB` introspection, `QUIT` or `RESET`.
 - `PUBLISH` counts only subscribers that accepted the message; one that was just disconnected for being slow isn't counted.
-- Data lives in memory only, for now.
+- The AOF grows forever: no `BGREWRITEAOF`. Snapshots aren't taken automatically (no `save 60 1000` rules), and there's no `LASTSAVE`.
+- The snapshot format is RESP commands, not Redis's binary RDB.
+- Write errors on the AOF are logged and stop further logging; Redis would refuse writes (`MISCONF`) instead.
