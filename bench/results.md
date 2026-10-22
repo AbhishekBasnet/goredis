@@ -62,40 +62,65 @@ Reproduce with `scripts/bench.sh PORT [PIPELINE] [RUNS]`.
 
 ## With the AOF
 
-Write commands only, both servers fsyncing to the same btrfs filesystem.
+Write commands only. Both servers fsync to the same btrfs filesystem on NVMe. "Before" is the `stage-9` binary; "after" adds **group commit**. All three servers were interleaved, 3 runs each. The `stage-9` binary ran fewer requests under `always` (5k), because it only managed about 700/s.
 
-### `appendfsync everysec` (P=1: 200k requests; P=16: 1M requests; 3 runs)
+### `appendfsync always`
 
-| command | Redis P=1 | goredis P=1 | Redis P=16 | goredis P=16 | goredis p50 ms at P=16 |
-|---|---:|---:|---:|---:|---:|
-| `SET` | 92,464 | 73,368 (79%) | 516,529 | 204,082 (40%) | 12.4 |
-| `INCR` | 92,678 | 72,176 (78%) | 573,394 | 166,196 (29%) | 14.1 |
-| `LPUSH` | 86,430 | 73,233 (85%) | 255,689 | 190,440 (74%) | 12.9 |
-| `LPOP` | 93,809 | 80,645 (86%) | 437,445 | 184,672 (42%) | 13.1 |
-| `MSET` | 60,588 | 78,339 (129%) | 138,523 | 107,411 (78%) | 22.3 |
+P=1 (50k requests):
 
-### `appendfsync always` (5k requests; 3 runs)
+| command | Redis 7.4 | goredis before | goredis after | after / before | after / Redis | p50 ms before → after (Redis) |
+|---|---:|---:|---:|---:|---:|---:|
+| `SET` | 16,271 | 721 | 18,512 | 25.7× | 114% | 76.99 → 3.21 (4.20) |
+| `INCR` | 19,128 | 709 | 18,182 | 25.7× | 95% | 79.04 → 3.25 (3.76) |
+| `LPUSH` | 18,437 | 730 | 18,484 | 25.3× | 100% | 76.16 → 3.21 (3.91) |
+| `LPOP` | 18,990 | 705 | 18,657 | 26.4× | 98% | 79.10 → 3.17 (3.76) |
+| `MSET` | 16,639 | 727 | 17,403 | 23.9× | 105% | 76.73 → 3.48 (4.27) |
 
-| command | Redis P=1 | goredis P=1 | Redis P=16 | goredis P=16 | goredis p50 ms at P=16 |
-|---|---:|---:|---:|---:|---:|
-| `SET` | 18,657 | 696 (4%) | 192,615 | 746 (0.4%) | 1125.4 |
-| `INCR` | 17,241 | 670 (4%) | 217,739 | 717 (0.3%) | 1159.2 |
-| `LPUSH` | 16,447 | 720 (4%) | 172,690 | 736 (0.4%) | 1165.3 |
-| `LPOP` | 18,182 | 708 (4%) | 208,667 | 722 (0.3%) | 1147.9 |
-| `MSET` | 15,106 | 705 (5%) | 106,553 | 707 (0.7%) | 1197.1 |
+P=16 (500k requests):
 
-**This is goredis's biggest gap, and the next thing to fix.**
+| command | Redis 7.4 | goredis before | goredis after | after / before | after / Redis | p50 ms before → after (Redis) |
+|---|---:|---:|---:|---:|---:|---:|
+| `SET` | 203,004 | 759 | 287,522 | 378.9× | 142% | 1098.75 → 3.54 (5.27) |
+| `INCR` | 222,321 | 554 | 240,038 | 433.0× | 108% | 2482.18 → 4.23 (4.77) |
+| `LPUSH` | 169,895 | 742 | 254,194 | 342.7× | 150% | 1118.21 → 4.01 (6.22) |
+| `LPOP` | 204,666 | 731 | 290,192 | 397.2× | 142% | 1131.52 → 3.25 (5.04) |
+| `MSET` | 105,708 | 723 | 257,998 | 356.6× | 244% | 1213.44 → 4.42 (9.05) |
 
-| | Redis | goredis |
+### `appendfsync everysec`
+
+P=1 (100k requests):
+
+| command | Redis 7.4 | goredis before | goredis after | after / before | after / Redis | p50 ms before → after (Redis) |
+|---|---:|---:|---:|---:|---:|---:|
+| `SET` | 114,943 | 61,387 | 85,763 | 1.4× | 75% | 0.73 → 0.54 (0.52) |
+| `INCR` | 104,603 | 64,350 | 75,529 | 1.2× | 72% | 0.70 → 0.57 (0.51) |
+| `LPUSH` | 93,633 | 68,918 | 62,305 | 0.9× | 67% | 0.67 → 0.70 (0.72) |
+| `LPOP` | 101,112 | 64,516 | 61,387 | 1.0× | 61% | 0.67 → 0.70 (0.52) |
+| `MSET` | 68,729 | 71,174 | 57,537 | 0.8× | 84% | 0.91 → 0.76 (0.96) |
+
+P=16 (1M requests):
+
+| command | Redis 7.4 | goredis before | goredis after | after / before | after / Redis | p50 ms before → after (Redis) |
+|---|---:|---:|---:|---:|---:|---:|
+| `SET` | 466,200 | 220,848 | 572,410 | 2.6× | 123% | 11.55 → 2.21 (2.13) |
+| `INCR` | 583,090 | 165,044 | 422,297 | 2.6× | 72% | 14.31 → 5.74 (1.76) |
+| `LPUSH` | 286,862 | 168,919 | 469,484 | 2.8× | 164% | 14.36 → 4.58 (3.65) |
+| `LPOP` | 453,926 | 169,779 | 524,384 | 3.1× | 116% | 14.05 → 2.64 (2.17) |
+| `MSET` | 110,779 | 105,009 | 187,688 | 1.8× | 169% | 22.77 → 12.61 (8.80) |
+
+### What group commit changed
+
+| | Before | After (and Redis) |
 |---|---|---|
-| AOF `write` | one per event-loop iteration, covering every command in it | one per command, under the global store lock |
-| `fsync` with `always` | one per event-loop iteration (group commit) | one per command, under the global store lock |
+| `Append`, under the store lock | `write` syscall, plus `fsync` with `always` | encode into an in-memory buffer (about 25 ns, no allocation) |
+| Who does the I/O | every writer, one at a time, holding the global lock | one flusher goroutine, with no store lock held |
+| Writes per `write`/`fsync` | 1 | everything that arrived since the last one |
+| When the reply is sent | after its own `write` (and `fsync`) | after the flusher reports its entry written (`no`/`everysec`) or synced (`always`) |
 
-With `everysec`, every write command makes its own `write` syscall while holding the lock, so pipelined writers queue behind each other (p50 12–14 ms). With `always`, every command waits for its own fsync while holding the lock (about 1.4 ms each, implied by the ~700/s ceiling), so throughput is capped at about 700/s *whatever the concurrency or pipelining*, and Redis is 25× to 300× faster.
-
-The fix is **group commit**: `Append` adds to an in-memory buffer under the lock, without doing I/O; one writer goroutine writes and (for `always`) fsyncs whatever has accumulated; and a connection waits for its last entry to be written (or synced) before flushing its replies. That keeps the current guarantees (nothing acknowledged is lost on `kill -9`, nor on power loss with `always`) while paying one syscall per batch instead of one per command.
-
----
+- **With `always`**, goredis went from about 700 writes/s, whatever the concurrency, to Redis's level: **25× unpipelined and 340–430× pipelined**. The p50 at P=16 went from 1.1 s to 3–4 ms. While one fsync is in flight, every new write joins the next batch, so the disk's fsync rate no longer limits the write rate.
+- **With `everysec`, pipelined**, it's 2.6–3.1× faster. Writers no longer take turns doing a `write` syscall under the global lock.
+- **Unpipelined `everysec`** is within the noise, as expected: a request there is dominated by its network round trip, not by the AOF.
+- **The guarantees are unchanged.** A reply still isn't sent before its entry reached the OS (or the disk, with `always`). `TestKillDashNineUnderConcurrentWritesKeepsAcknowledgedWrites` checks this with 16 concurrent writers and `kill -9` under each policy.
 
 ## The one hotspot fixed in this stage
 
@@ -128,11 +153,11 @@ Throughput, by contrast, mostly drowns the effect in noise:
 
 Most commands move in the expected direction, but the change can't make `RPOP` slower (it only removes allocations), so that −11% is noise, which is the point of the warning at the top. At P=1 the request is dominated by about 12 µs of network and syscalls, so saving about 200 ns in the parser isn't visible in throughput at all.
 
-### Remaining hotspots (not fixed)
+### Remaining hotspots
 
 From the same profiles, in order of size:
 
-1. **AOF writes and fsyncs under the store lock**: see above. By far the largest.
+1. ~~**AOF writes and fsyncs under the store lock**~~: fixed with group commit, see above.
 2. **Global write lock contention**: `sync.(*Mutex).lockSlow`, including its spinning, was about 9% of CPU with 50 writers. Sharding the store by key hash is the planned experiment.
 3. **`strings.ToLower` on every command name**, done twice per command (`Blocks` and `Dispatch`), about 2.5%. A case-insensitive lookup that doesn't allocate would remove it.
 4. **`any` boxing of string values**: each `SET` allocates an interface box.

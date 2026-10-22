@@ -60,11 +60,11 @@ Measured with the real `redis-benchmark` against Redis 7.4 on the same laptop (5
 |---|---|
 | No persistence, unpipelined | about 70–90% |
 | No persistence, pipelined (`-P 16`) | roughly on par (69%–199% by command) |
-| AOF `everysec`, pipelined writes | 29–78% |
-| AOF `always` | **about 700 writes/s vs Redis's 17k–218k** (no group commit yet) |
+| AOF `everysec`, pipelined writes | 72–169% |
+| AOF `always` | 95–114% unpipelined, 108–244% pipelined |
 
 - **Profiling found one big hotspot, and I fixed it.** The RESP parser spent 18% of CPU allocating three buffers per argument. Reading small arguments in place took a `SET` from 374 ns and 13 allocations to 157 ns and 4, and cut server CPU per request by 24% (pipelined) and 9% (unpipelined).
-- **The AOF is the known bottleneck.** goredis writes, and with `always` fsyncs, once per command under the store lock, where Redis batches per event-loop iteration. Group commit is the next fix; the design is in the results file.
+- **Group commit made the AOF 25× to 430× faster with `always`.** Before, every write did its own `write` and `fsync` under the global lock: about 700 writes/s whatever the load. Now writes go into a buffer, and one flusher goroutine writes and fsyncs each batch.
 
 ## Compatibility
 
@@ -151,7 +151,7 @@ Dependencies point one way: `server → resp, pubsub`, `command → resp, store,
 
 **Replay is raw.** Loading applies journal entries straight to the data, ignoring expiry until it's done, because whether a key was alive was decided when the entry was written, not when it's replayed.
 
-**AOF durability.** Each entry reaches the OS (`write`) before the client's reply, so a crashed process (`kill -9`) loses nothing it acknowledged. `appendfsync` decides when the OS is forced to disk: on every write, once a second from a background goroutine (the fsync happens outside the AOF lock, so writers don't stall), or never. On startup, a last command cut off mid-write is detected and truncated away; corruption anywhere else refuses to start rather than guessing.
+**AOF group commit.** Recording an entry, under the store lock, only appends its RESP encoding to an in-memory buffer and bumps a sequence number: no I/O. A flusher goroutine owned by the AOF swaps the buffer out, writes everything in it with one `write`, and with `appendfsync always` one `fsync`. Before flushing a batch of replies, a connection checks whether the sequence number moved while its commands ran. If it did, it waits until the flusher reports that sequence written (`no`, `everysec`) or synced (`always`). So a reply is still never sent before its entry reached the OS, and with `always` the disk: `kill -9` loses nothing acknowledged. While one fsync is in flight, every write that arrives joins the next batch, which is how `always` went from about 700 writes/s to Redis's level. With `everysec` a ticker fsyncs once a second. On startup, a last command cut off mid-write is detected and truncated away; corruption anywhere else refuses to start rather than guessing.
 
 **Snapshots don't block clients.** `Dump()` copies the dataset as commands under a brief read lock; writing the file happens outside any lock (in a goroutine for `BGSAVE`). Writes go to a temp file, then `fsync`, `rename` over the old snapshot and `fsync` the directory, so a crash leaves either the old snapshot or the new one, never half of one. The snapshot format is the same RESP commands as the AOF, so both load through the same code. With the AOF on, it's the source of truth; when the AOF is first enabled on top of a snapshot, it's seeded from the snapshot.
 
@@ -177,6 +177,7 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 - **Producers/consumers:** many pushers and many `BLPOP` consumers, in-process and over TCP; every element must arrive exactly once.
 - **Pub/Sub:** fan-out to 20 subscribers over TCP in order; a subscriber that never reads is disconnected while publishers keep going; subscriptions disappear when the connection does.
 - **Persistence:** journal replay against a model (1M random ops checked); every truncation point of an AOF recovers a clean prefix; the real binary is restarted with clean shutdown and `kill -9`, with a served `BLPOP`, a truncated tail, a corrupt file, snapshots only and switching from snapshots to the AOF.
+- **Group commit:** 100 concurrent writers with a deliberately slow fsync share fewer than 20 fsyncs; `always` waits for the fsync and `everysec` doesn't; a failed write or `Close` never leaves a waiter hanging; replies wait for durability, a pipelined batch waits once, and read-only batches don't wait; `kill -9` under 16 concurrent writers keeps every acknowledged write, for each fsync policy.
 - **Lifecycle:** shutdown wakes idle, blocked and subscribed clients; waits for a command in progress; force-closes after the grace period; client limit and idle timeout; no goroutine leaks after many connect/disconnect cycles; SIGTERM under write load keeps every acknowledged write.
 - **Model test:** the ring buffer is checked against a plain slice over 10,000 random operations.
 - **Integration:** a real server on port 0, driven over TCP with raw RESP, including a 1000-command pipeline.
@@ -197,6 +198,7 @@ CI (`.github/workflows/ci.yml`) runs gofmt, vet, the race-enabled tests, 30 s of
 | Persistence (AOF, snapshots) | ✅ |
 | Graceful shutdown, client limits, `INFO`, metrics | ✅ |
 | Benchmarks against real Redis, profiling, Dockerfile, CI | ✅ |
+| Stretch: AOF group commit | ✅ |
 
 ## Known differences from Redis
 
@@ -213,5 +215,4 @@ CI (`.github/workflows/ci.yml`) runs gofmt, vet, the race-enabled tests, 30 s of
 - The snapshot format is RESP commands, not Redis's binary RDB.
 - `INFO` has fewer fields than Redis's, and `used_memory` is the Go heap, not RSS.
 - A command that ignored its context and never returned would hold up shutdown; every real command waits only on the network or on `BLPOP`, both of which shutdown interrupts.
-- With the AOF on, writes are much slower than Redis's, especially with `appendfsync always`: no group commit (see Performance).
 - Write errors on the AOF are logged and stop further logging; Redis would refuse writes (`MISCONF`) instead.
