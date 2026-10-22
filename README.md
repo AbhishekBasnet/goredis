@@ -33,6 +33,10 @@ make race                  # every test, under the race detector
 | `-dir` | `.` | where `appendonly.aof` and `dump.resp` live |
 | `-appendonly` | `true` | log every write to the AOF |
 | `-appendfsync` | `everysec` | `always`, `everysec` or `no` |
+| `-maxclients` | `10000` | connection limit, `0` for none |
+| `-timeout` | `0` | close clients idle this long (e.g. `5m`), `0` for never |
+| `-shutdown-grace` | `5s` | how long shutdown waits for busy clients |
+| `-metrics-addr` | off | serve Prometheus metrics, e.g. `:9121` |
 
 ## Supported commands
 
@@ -44,6 +48,7 @@ make race                  # every test, under the race detector
 | Lists | `LPUSH`, `RPUSH`, `LPOP [count]`, `RPOP [count]`, `LLEN`, `LRANGE`, `BLPOP`, `BRPOP` |
 | Pub/Sub | `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH` |
 | Persistence | `SAVE`, `BGSAVE` |
+| Server | `INFO [section ...]` |
 
 Replies and error messages match Redis exactly, e.g. `ERR wrong number of arguments for 'get' command` and `WRONGTYPE` when a string command meets a list. Both RESP arrays and inline commands (`printf 'PING\r\n' | nc localhost 6380`) are accepted, and pipelining is supported.
 
@@ -66,7 +71,10 @@ flowchart LR
         S -- "hand-off via<br/>1-slot channel" --> B["clients blocked<br/>in BLPOP"]
     end
 
-    SIG["SIGINT / SIGTERM"] -. "context cancel" .-> E
+    SIG["SIGINT / SIGTERM"] -. "context cancel" .-> A
+    SIG -. "context cancel" .-> E
+    ST["stats.Report"] --> INFO["INFO"]
+    ST --> MET["/metrics (HTTP)"]
 ```
 
 ```
@@ -76,6 +84,8 @@ internal/server   TCP listener, one goroutine per connection, flush policy
 internal/command  command table, per-connection Client, handlers
 internal/pubsub   broker: channel → subscribers, slow-subscriber policy
 internal/persistence  AOF writer and loader, atomic snapshots
+internal/stats    counters and one Report for INFO and /metrics
+internal/metrics  Prometheus text endpoint
 internal/store    data, locking, expiry
 test/integration  real server on a random port, driven over TCP
 ```
@@ -119,6 +129,12 @@ Dependencies point one way: `server → resp, pubsub`, `command → resp, store,
 
 **Snapshots don't block clients.** `Dump()` copies the dataset as commands under a brief read lock; writing the file happens outside any lock (in a goroutine for `BGSAVE`). Writes go to a temp file, then `fsync`, `rename` over the old snapshot and `fsync` the directory, so a crash leaves either the old snapshot or the new one, never half of one. The snapshot format is the same RESP commands as the AOF, so both load through the same code. With the AOF on, it's the source of truth; when the AOF is first enabled on top of a snapshot, it's seeded from the snapshot.
 
+**Graceful shutdown in a fixed order.** SIGINT/SIGTERM cancels one context. The server closes its listener, the cancellation wakes clients blocked in `BLPOP` (they get `(nil)`), and every connection gets a read deadline of "now", which wakes idle and subscribed clients. A command that's already running finishes and its reply is sent. Handlers check the context before every read, after setting their own deadline, so a handler can't re-arm a deadline that shutdown just set. `Run` returns only once every handler has exited; after a grace period (5 s), connections still busy are force-closed. Only then does `main` stop the expiry and fsync goroutines, wait for a running `BGSAVE` and close the AOF. So no write can race the AOF closing.
+
+**Limits.** Over `-maxclients`, a new connection gets `-ERR max number of clients reached` and is closed, as in Redis. `-timeout` closes idle clients, but not subscribers or clients blocked in `BLPOP`, also as in Redis. A failing `Accept` (e.g. out of file descriptors) backs off from 5 ms up to 1 s and retries, instead of taking the server down.
+
+**One source of numbers.** `INFO` and `/metrics` both render the same `stats.Report`, collected from atomic counters (connections, commands) and the store and broker (keys, blocked clients, subscribers), so they can never disagree.
+
 **Testable time.** The store reads the time through a `now func() time.Time` field. Expiry unit tests swap in a fake clock and move it forward, so they're exact and never sleep.
 
 ## Testing
@@ -135,6 +151,7 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 - **Producers/consumers:** many pushers and many `BLPOP` consumers, in-process and over TCP; every element must arrive exactly once.
 - **Pub/Sub:** fan-out to 20 subscribers over TCP in order; a subscriber that never reads is disconnected while publishers keep going; subscriptions disappear when the connection does.
 - **Persistence:** journal replay against a model (1M random ops checked); every truncation point of an AOF recovers a clean prefix; the real binary is restarted with clean shutdown and `kill -9`, with a served `BLPOP`, a truncated tail, a corrupt file, snapshots only and switching from snapshots to the AOF.
+- **Lifecycle:** shutdown wakes idle, blocked and subscribed clients; waits for a command in progress; force-closes after the grace period; client limit and idle timeout; no goroutine leaks after many connect/disconnect cycles; SIGTERM under write load keeps every acknowledged write.
 - **Model test:** the ring buffer is checked against a plain slice over 10,000 random operations.
 - **Integration:** a real server on port 0, driven over TCP with raw RESP, including a 1000-command pipeline.
 
@@ -148,8 +165,8 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 | Lists and blocking `BLPOP` | ✅ |
 | Pub/Sub | ✅ |
 | Persistence (AOF, snapshots) | ✅ |
-| Graceful shutdown, client limits, `INFO` | next |
-| Benchmarks against real Redis, Dockerfile | planned |
+| Graceful shutdown, client limits, `INFO`, metrics | ✅ |
+| Benchmarks against real Redis, Dockerfile | next |
 
 ## Known differences from Redis
 
@@ -163,4 +180,6 @@ go test -fuzz=FuzzReadCommand -fuzztime=1m ./internal/resp  # fuzz the protocol 
 - `PUBLISH` counts only subscribers that accepted the message; one that was just disconnected for being slow isn't counted.
 - The AOF grows forever: no `BGREWRITEAOF`. Snapshots aren't taken automatically (no `save 60 1000` rules), and there's no `LASTSAVE`.
 - The snapshot format is RESP commands, not Redis's binary RDB.
+- `INFO` has fewer fields than Redis's, and `used_memory` is the Go heap, not RSS.
+- A command that ignored its context and never returned would hold up shutdown; every real command waits only on the network or on `BLPOP`, both of which shutdown interrupts.
 - Write errors on the AOF are logged and stop further logging; Redis would refuse writes (`MISCONF`) instead.
