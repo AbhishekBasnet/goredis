@@ -192,3 +192,29 @@ func FuzzReadCommand(f *testing.F) {
 		}
 	})
 }
+
+func TestReadCommandBulkSizes(t *testing.T) {
+	for _, n := range []int{0, 1, 4093, 4094, 4095, 4096, 10_000, 100_000} {
+		value := strings.Repeat("x", n)
+		input := string(encode([]string{"SET", "k", value}))
+		for name, r := range map[string]io.Reader{
+			"whole":     strings.NewReader(input),
+			"one byte":  iotest.OneByteReader(strings.NewReader(input)),
+			"half read": iotest.HalfReader(strings.NewReader(input)),
+		} {
+			got, err := NewReader(r).ReadCommand()
+			if err != nil || len(got) != 3 || got[2] != value {
+				t.Errorf("n=%d, %s: err %v, got %d args", n, name, err, len(got))
+			}
+		}
+
+		bad := strings.Replace(input, value+"\r\n", value+"xx", 1)
+		if _, err := NewReader(strings.NewReader(bad)).ReadCommand(); !errors.Is(err, ErrProtocol) {
+			t.Errorf("n=%d without CRLF: err = %v", n, err)
+		}
+		cut := input[:len(input)-1]
+		if _, err := NewReader(strings.NewReader(cut)).ReadCommand(); !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("n=%d cut short: err = %v", n, err)
+		}
+	}
+}

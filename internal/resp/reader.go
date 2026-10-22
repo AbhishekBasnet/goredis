@@ -11,6 +11,8 @@ import (
 
 var ErrProtocol = errors.New("Protocol error")
 
+var errNoCRLF = fmt.Errorf("%w: bulk string not terminated by CRLF", ErrProtocol)
+
 const (
 	maxArrayLen = 1024 * 1024
 	maxBulkLen  = 512 * 1024 * 1024
@@ -93,6 +95,10 @@ func (r *Reader) readBulk() (string, error) {
 		return "", fmt.Errorf("%w: invalid bulk length", ErrProtocol)
 	}
 
+	if n+2 <= r.rd.Size() {
+		return r.readSmallBulk(n)
+	}
+
 	var sb strings.Builder
 	sb.Grow(min(n+2, 64*1024))
 	if _, err := io.CopyN(&sb, r.rd, int64(n)+2); err != nil {
@@ -101,9 +107,22 @@ func (r *Reader) readBulk() (string, error) {
 
 	s := sb.String()
 	if s[n:] != "\r\n" {
-		return "", fmt.Errorf("%w: bulk string not terminated by CRLF", ErrProtocol)
+		return "", errNoCRLF
 	}
 	return s[:n], nil
+}
+
+func (r *Reader) readSmallBulk(n int) (string, error) {
+	b, err := r.rd.Peek(n + 2)
+	if err != nil {
+		return "", unexpected(err)
+	}
+	if b[n] != '\r' || b[n+1] != '\n' {
+		return "", errNoCRLF
+	}
+	s := string(b[:n])
+	r.rd.Discard(n + 2)
+	return s, nil
 }
 
 func (r *Reader) readLine() ([]byte, error) {
