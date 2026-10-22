@@ -37,6 +37,7 @@ func (c *Client) Dispatch(ctx context.Context, args []string) {
 		c.w.WriteError(fmt.Sprintf("ERR Can't execute '%s': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context", cmd.Name))
 		return
 	}
+	c.reg.counters.CommandsProcessed.Add(1)
 	cmd.Handler(ctx, c, args)
 }
 

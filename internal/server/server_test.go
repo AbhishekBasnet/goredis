@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
@@ -14,18 +15,18 @@ import (
 )
 
 func newRegistry(st *store.Store) *command.Registry {
-	return command.NewRegistry(st, pubsub.NewBroker(16), nil)
+	return command.NewRegistry(command.Config{Store: st, Broker: pubsub.NewBroker(16)})
 }
 
 func startHandler(t *testing.T, reg *command.Registry) (net.Conn, <-chan struct{}) {
 	t.Helper()
 
 	client, srvConn := net.Pipe()
-	s := New("", slog.New(slog.DiscardHandler), func(w *resp.Writer) Session { return reg.NewClient(w) })
+	s := New("", slog.New(slog.DiscardHandler), func(w *resp.Writer) Session { return reg.NewClient(w) }, Config{})
 
 	done := make(chan struct{})
 	go func() {
-		s.handle(srvConn)
+		s.handle(context.Background(), srvConn)
 		close(done)
 	}()
 
@@ -174,7 +175,7 @@ func TestSubscriberHangsUp(t *testing.T) {
 }
 
 func TestSlowSubscriberDisconnected(t *testing.T) {
-	reg := command.NewRegistry(store.New(), pubsub.NewBroker(2), nil)
+	reg := command.NewRegistry(command.Config{Store: store.New(), Broker: pubsub.NewBroker(2)})
 	sub, subDone := startHandler(t, reg)
 	pub, _ := startHandler(t, reg)
 

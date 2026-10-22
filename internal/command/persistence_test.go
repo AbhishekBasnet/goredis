@@ -4,7 +4,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/AbhishekBasnet/goredis/internal/pubsub"
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
@@ -18,7 +17,7 @@ func (f *fakeSaver) BackgroundSave() error { f.bgsaves++; return f.err }
 
 func TestSaveCommands(t *testing.T) {
 	saver := &fakeSaver{}
-	c := newTestClient(NewRegistry(store.New(), pubsub.NewBroker(16), saver))
+	c := newTestClient(NewRegistry(Config{Store: store.New(), Saver: saver}))
 
 	if got := c.run("SAVE"); got != "+OK\r\n" {
 		t.Errorf("SAVE = %q", got)

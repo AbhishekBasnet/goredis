@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/AbhishekBasnet/goredis/internal/pubsub"
+	"github.com/AbhishekBasnet/goredis/internal/stats"
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
@@ -20,15 +21,46 @@ type Command struct {
 	PubSub   bool
 }
 
-type Registry struct {
-	store  *store.Store
-	broker *pubsub.Broker
-	saver  Saver
-	cmds   map[string]Command
+type Config struct {
+	Store    *store.Store
+	Broker   *pubsub.Broker
+	Saver    Saver
+	Counters *stats.Counters
+	Info     func() stats.Report
 }
 
-func NewRegistry(st *store.Store, broker *pubsub.Broker, saver Saver) *Registry {
-	r := &Registry{store: st, broker: broker, saver: saver, cmds: make(map[string]Command)}
+type Registry struct {
+	store    *store.Store
+	broker   *pubsub.Broker
+	saver    Saver
+	counters *stats.Counters
+	info     func() stats.Report
+	cmds     map[string]Command
+}
+
+func NewRegistry(cfg Config) *Registry {
+	if cfg.Broker == nil {
+		cfg.Broker = pubsub.NewBroker(pubsub.DefaultBufferSize)
+	}
+	if cfg.Counters == nil {
+		cfg.Counters = &stats.Counters{}
+	}
+	if cfg.Info == nil {
+		cfg.Info = stats.Sources{
+			Counters: cfg.Counters,
+			Keys:     cfg.Store.KeyCount,
+			Blocked:  cfg.Store.BlockedClients,
+			PubSub:   cfg.Broker.Counts,
+		}.Collect
+	}
+	r := &Registry{
+		store:    cfg.Store,
+		broker:   cfg.Broker,
+		saver:    cfg.Saver,
+		counters: cfg.Counters,
+		info:     cfg.Info,
+		cmds:     make(map[string]Command),
+	}
 	for _, c := range []Command{
 		{Name: "ping", Arity: -1, Handler: ping, PubSub: true},
 		{Name: "echo", Arity: 2, Handler: echo},
@@ -62,6 +94,7 @@ func NewRegistry(st *store.Store, broker *pubsub.Broker, saver Saver) *Registry 
 
 		{Name: "save", Arity: 1, Handler: save},
 		{Name: "bgsave", Arity: 1, Handler: bgsave},
+		{Name: "info", Arity: -1, Handler: info},
 	} {
 		r.cmds[c.Name] = c
 	}

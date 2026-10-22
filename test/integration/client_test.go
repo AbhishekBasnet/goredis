@@ -35,9 +35,9 @@ func startServerWithBuffer(t *testing.T, pubsubBuffer int) string {
 	ctx, cancel := context.WithCancel(context.Background())
 	go st.RunExpiry(ctx, 10*time.Millisecond)
 
-	cmds := command.NewRegistry(st, pubsub.NewBroker(pubsubBuffer), nil)
-	srv := server.New(ln.Addr().String(), slog.New(slog.DiscardHandler), func(w *resp.Writer) server.Session { return cmds.NewClient(w) })
-	go srv.Serve(ln)
+	cmds := command.NewRegistry(command.Config{Store: st, Broker: pubsub.NewBroker(pubsubBuffer)})
+	srv := server.New(ln.Addr().String(), slog.New(slog.DiscardHandler), func(w *resp.Writer) server.Session { return cmds.NewClient(w) }, server.Config{})
+	go srv.Serve(ctx, ln)
 	t.Cleanup(func() {
 		ln.Close()
 		cancel()

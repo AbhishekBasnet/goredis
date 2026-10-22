@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -12,12 +13,10 @@ import (
 	"github.com/AbhishekBasnet/goredis/internal/resp"
 )
 
-func (s *Server) handle(conn net.Conn) {
+func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	remote := conn.RemoteAddr().String()
 	s.log.Info("Client connected", "remote", remote)
 	defer s.log.Info("Client disconnected", "remote", remote)
-
-	ctx := context.Background()
 
 	r := resp.NewReader(conn)
 	w := resp.NewWriter(conn)
@@ -31,19 +30,26 @@ func (s *Server) handle(conn net.Conn) {
 		close(done)
 		bg.Wait()
 		sess.Close()
+		s.untrack(conn)
 	}()
 
 	pumping := false
 	for {
+		if !s.readyToRead(ctx, conn, sess) {
+			return
+		}
 		args, err := r.ReadCommand()
 		if err != nil {
-			if errors.Is(err, resp.ErrProtocol) {
+			switch {
+			case errors.Is(err, resp.ErrProtocol):
 				s.log.Warn("protocol error", "remote", remote, "err", err)
 				wmu.Lock()
 				w.WriteError("ERR " + err.Error())
 				w.Flush()
 				wmu.Unlock()
-			} else if !errors.Is(err, io.EOF) {
+			case errors.Is(err, os.ErrDeadlineExceeded) && ctx.Err() == nil:
+				s.log.Info("closing idle client", "remote", remote, "idle", s.cfg.IdleTimeout)
+			case !errors.Is(err, io.EOF) && ctx.Err() == nil:
 				s.log.Debug("read failed", "remote", remote, "err", err)
 			}
 			return
@@ -82,6 +88,17 @@ func (s *Server) handle(conn net.Conn) {
 	}
 }
 
+func (s *Server) readyToRead(ctx context.Context, conn net.Conn, sess Session) bool {
+	if s.cfg.IdleTimeout > 0 {
+		deadline := time.Now().Add(s.cfg.IdleTimeout)
+		if sub := sess.Subscriber(); sub != nil && sub.Count() > 0 {
+			deadline = time.Time{}
+		}
+		conn.SetReadDeadline(deadline)
+	}
+	return ctx.Err() == nil
+}
+
 func pump(w *resp.Writer, wmu *sync.Mutex, sub *pubsub.Subscriber, done <-chan struct{}) {
 	msgs := sub.Messages()
 	for {
@@ -115,6 +132,7 @@ func runBlocking(ctx context.Context, conn net.Conn, r *resp.Reader, run func(co
 		return
 	}
 
+	conn.SetReadDeadline(time.Time{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

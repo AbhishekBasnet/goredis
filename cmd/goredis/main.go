@@ -6,17 +6,22 @@ import (
 	"flag"
 	"io/fs"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/AbhishekBasnet/goredis/internal/command"
+	"github.com/AbhishekBasnet/goredis/internal/metrics"
 	"github.com/AbhishekBasnet/goredis/internal/persistence"
 	"github.com/AbhishekBasnet/goredis/internal/pubsub"
 	"github.com/AbhishekBasnet/goredis/internal/resp"
 	"github.com/AbhishekBasnet/goredis/internal/server"
+	"github.com/AbhishekBasnet/goredis/internal/stats"
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
@@ -25,8 +30,13 @@ func main() {
 	dir := flag.String("dir", ".", "directory for the AOF and snapshot files")
 	appendonly := flag.Bool("appendonly", true, "log every write to the append-only file")
 	appendfsync := flag.String("appendfsync", "everysec", "when to fsync the AOF: always, everysec or no")
+	maxClients := flag.Int("maxclients", 10000, "maximum connected clients, 0 for no limit")
+	timeout := flag.Duration("timeout", 0, "close clients idle for this long, 0 to never")
+	grace := flag.Duration("shutdown-grace", server.DefaultShutdownGrace, "how long shutdown waits for busy clients")
+	metricsAddr := flag.String("metrics-addr", "", "serve Prometheus metrics on this address, e.g. :9121")
 	flag.Parse()
 
+	start := time.Now()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
 	policy, err := persistence.ParseFsync(*appendfsync)
@@ -58,6 +68,18 @@ func main() {
 		st.SetJournal(aof)
 	}
 	snaps := persistence.NewSnapshotter(snapPath, st, log)
+	broker := pubsub.NewBroker(pubsub.DefaultBufferSize)
+	counters := &stats.Counters{}
+	collect := stats.Sources{
+		Counters:   counters,
+		Start:      start,
+		MaxClients: *maxClients,
+		AOFEnabled: *appendonly,
+		Keys:       st.KeyCount,
+		Blocked:    st.BlockedClients,
+		PubSub:     broker.Counts,
+		Saving:     snaps.Saving,
+	}.Collect
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -68,21 +90,44 @@ func main() {
 		bg.Go(func() { aof.Run(ctx) })
 	}
 
-	cmds := command.NewRegistry(st, pubsub.NewBroker(pubsub.DefaultBufferSize), snaps)
-	srv := server.New(*addr, log, func(w *resp.Writer) server.Session { return cmds.NewClient(w) })
-	errc := make(chan error, 1)
-	go func() { errc <- srv.Run() }()
+	var metricsSrv *http.Server
+	if *metricsAddr != "" {
+		ln, err := net.Listen("tcp", *metricsAddr)
+		if err != nil {
+			log.Error("metrics listener failed", "err", err)
+			os.Exit(1)
+		}
+		log.Info("metrics listening", "addr", ln.Addr().String())
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", metrics.Handler(collect))
+		metricsSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		bg.Go(func() {
+			if err := metricsSrv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+				log.Error("metrics server stopped", "err", err)
+			}
+		})
+	}
+
+	cmds := command.NewRegistry(command.Config{Store: st, Broker: broker, Saver: snaps, Counters: counters, Info: collect})
+	srv := server.New(*addr, log, func(w *resp.Writer) server.Session { return cmds.NewClient(w) }, server.Config{
+		MaxClients:    *maxClients,
+		IdleTimeout:   *timeout,
+		ShutdownGrace: *grace,
+		Counters:      counters,
+	})
 
 	code := 0
-	select {
-	case err := <-errc:
+	if err := srv.Run(ctx); err != nil {
 		log.Error("server stopped", "err", err)
 		code = 1
-	case <-ctx.Done():
-		log.Info("shutting down")
 	}
 
 	stop()
+	if metricsSrv != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), *grace)
+		metricsSrv.Shutdown(shutdownCtx)
+		cancel()
+	}
 	bg.Wait()
 	snaps.Wait()
 	if aof != nil {
@@ -91,7 +136,7 @@ func main() {
 			code = 1
 		}
 	}
-	log.Info("background tasks stopped")
+	log.Info("shutdown complete")
 	os.Exit(code)
 }
 
