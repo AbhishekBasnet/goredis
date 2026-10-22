@@ -167,3 +167,26 @@ func TestConcurrentPublishSubscribe(t *testing.T) {
 		}
 	}
 }
+
+func TestCounts(t *testing.T) {
+	b := NewBroker(8)
+	a, c := b.NewSubscriber(), b.NewSubscriber()
+	a.Subscribe("x")
+	a.Subscribe("y")
+	c.Subscribe("y")
+	if clients, channels := b.Counts(); clients != 2 || channels != 2 {
+		t.Errorf("Counts = %d, %d; want 2, 2", clients, channels)
+	}
+
+	a.Unsubscribe("x")
+	a.Unsubscribe("never")
+	if clients, channels := b.Counts(); clients != 2 || channels != 1 {
+		t.Errorf("after one unsubscribe: %d, %d; want 2, 1", clients, channels)
+	}
+	a.Close()
+	c.Unsubscribe("y")
+	c.Unsubscribe("y")
+	if clients, channels := b.Counts(); clients != 0 || channels != 0 {
+		t.Errorf("after everyone left: %d, %d; want 0, 0", clients, channels)
+	}
+}

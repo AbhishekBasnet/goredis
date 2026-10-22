@@ -269,3 +269,36 @@ func TestBPopProducersConsumers(t *testing.T) {
 		}
 	}
 }
+
+func TestCounts(t *testing.T) {
+	s, _ := newTestStore()
+	s.Set("a", "1", 0)
+	s.Set("b", "1", time.Minute)
+	s.Push("l", false, "x")
+	if keys, expires := s.KeyCount(); keys != 3 || expires != 1 {
+		t.Errorf("KeyCount = %d, %d; want 3, 1", keys, expires)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		s.BPop(ctx, []string{"q1", "q2"}, true, 0)
+		close(done)
+	}()
+	waitForWaiters(t, s, "q1", 1)
+	if n := s.BlockedClients(); n != 1 {
+		t.Errorf("BlockedClients = %d, want 1 for one client on two keys", n)
+	}
+	cancel()
+	<-done
+	if n := s.BlockedClients(); n != 0 {
+		t.Errorf("BlockedClients after cancel = %d", n)
+	}
+
+	go s.BPop(context.Background(), []string{"q"}, true, 0)
+	waitForWaiters(t, s, "q", 1)
+	s.Push("q", false, "v")
+	if n := s.BlockedClients(); n != 0 {
+		t.Errorf("BlockedClients after serving = %d", n)
+	}
+}

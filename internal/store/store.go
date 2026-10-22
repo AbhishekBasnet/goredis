@@ -30,6 +30,7 @@ type Store struct {
 	data     map[string]entry
 	volatile map[string]struct{}
 	waiters  map[string][]*waiter
+	blocked  int
 	journal  Journal
 	now      func() time.Time
 }
@@ -209,6 +210,20 @@ func (s *Store) Persist(key string) bool {
 	s.put(key, e)
 	s.record("PERSIST", key)
 	return true
+}
+
+func (s *Store) KeyCount() (keys, expires int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return len(s.data), len(s.volatile)
+}
+
+func (s *Store) BlockedClients() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.blocked
 }
 
 func (s *Store) lookup(key string, now time.Time) (entry, bool) {

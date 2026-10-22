@@ -55,6 +55,10 @@ func (s *Snapshotter) BackgroundSave() error {
 	return nil
 }
 
+func (s *Snapshotter) Saving() bool {
+	return s.running.Load()
+}
+
 func (s *Snapshotter) Wait() {
 	s.wg.Wait()
 }

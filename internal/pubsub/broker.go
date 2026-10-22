@@ -15,6 +15,7 @@ type Message struct {
 type Broker struct {
 	mu      sync.RWMutex
 	subs    map[string]map[*Subscriber]struct{}
+	active  int
 	bufSize int
 }
 
@@ -56,6 +57,13 @@ func (b *Broker) Publish(channel, payload string) int {
 	return n
 }
 
+func (b *Broker) Counts() (clients, channels int) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	return b.active, len(b.subs)
+}
+
 func (s *Subscriber) Messages() <-chan Message {
 	return s.ch
 }
@@ -77,6 +85,9 @@ func (s *Subscriber) Subscribe(channel string) int {
 		b.subs[channel] = make(map[*Subscriber]struct{})
 	}
 	b.subs[channel][s] = struct{}{}
+	if len(s.channels) == 0 {
+		b.active++
+	}
 	s.channels[channel] = struct{}{}
 	return len(s.channels)
 }
@@ -115,7 +126,13 @@ func (s *Subscriber) Count() int {
 }
 
 func (s *Subscriber) unsubscribeLocked(channel string) {
+	if _, ok := s.channels[channel]; !ok {
+		return
+	}
 	delete(s.channels, channel)
+	if len(s.channels) == 0 {
+		s.broker.active--
+	}
 	subs := s.broker.subs[channel]
 	delete(subs, s)
 	if len(subs) == 0 {

@@ -37,6 +37,7 @@ func (s *Store) BPop(ctx context.Context, keys []string, front bool, timeout tim
 	for _, k := range keys {
 		s.waiters[k] = append(s.waiters[k], w)
 	}
+	s.blocked++
 	s.mu.Unlock()
 
 	var expired <-chan time.Time
@@ -75,6 +76,7 @@ func (s *Store) serveWaiters(key string, l *list) {
 }
 
 func (s *Store) unregister(w *waiter) {
+	s.blocked--
 	for _, k := range w.keys {
 		q := slices.DeleteFunc(s.waiters[k], func(x *waiter) bool { return x == w })
 		if len(q) == 0 {
