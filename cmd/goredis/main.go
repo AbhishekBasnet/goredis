@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -33,7 +34,7 @@ func main() {
 	maxClients := flag.Int("maxclients", 10000, "maximum connected clients, 0 for no limit")
 	timeout := flag.Duration("timeout", 0, "close clients idle for this long, 0 to never")
 	grace := flag.Duration("shutdown-grace", server.DefaultShutdownGrace, "how long shutdown waits for busy clients")
-	metricsAddr := flag.String("metrics-addr", "", "serve Prometheus metrics on this address, e.g. :9121")
+	metricsAddr := flag.String("metrics-addr", "", "serve Prometheus metrics and pprof on this address, e.g. :9121")
 	flag.Parse()
 
 	start := time.Now()
@@ -100,6 +101,11 @@ func main() {
 		log.Info("metrics listening", "addr", ln.Addr().String())
 		mux := http.NewServeMux()
 		mux.Handle("GET /metrics", metrics.Handler(collect))
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 		metricsSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 		bg.Go(func() {
 			if err := metricsSrv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
