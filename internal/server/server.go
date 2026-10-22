@@ -6,22 +6,25 @@ import (
 	"log/slog"
 	"net"
 
+	"github.com/AbhishekBasnet/goredis/internal/pubsub"
 	"github.com/AbhishekBasnet/goredis/internal/resp"
 )
 
-type Dispatcher interface {
-	Dispatch(ctx context.Context, w *resp.Writer, args []string)
+type Session interface {
+	Dispatch(ctx context.Context, args []string)
 	Blocks(args []string) bool
+	Subscriber() *pubsub.Subscriber
+	Close()
 }
 
 type Server struct {
-	addr string
-	log  *slog.Logger
-	cmds Dispatcher
+	addr       string
+	log        *slog.Logger
+	newSession func(w *resp.Writer) Session
 }
 
-func New(addr string, log *slog.Logger, cmds Dispatcher) *Server {
-	return &Server{addr: addr, log: log, cmds: cmds}
+func New(addr string, log *slog.Logger, newSession func(w *resp.Writer) Session) *Server {
+	return &Server{addr: addr, log: log, newSession: newSession}
 }
 
 func (s *Server) Run() error {

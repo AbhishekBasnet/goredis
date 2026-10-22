@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AbhishekBasnet/goredis/internal/pubsub"
 	"github.com/AbhishekBasnet/goredis/internal/resp"
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
@@ -17,6 +18,29 @@ type step struct {
 }
 
 func cmd(args ...string) []string { return args }
+
+func newTestRegistry() *Registry {
+	return NewRegistry(store.New(), pubsub.NewBroker(16))
+}
+
+type testClient struct {
+	*Client
+	buf *bytes.Buffer
+	w   *resp.Writer
+}
+
+func newTestClient(r *Registry) *testClient {
+	buf := new(bytes.Buffer)
+	w := resp.NewWriter(buf)
+	return &testClient{Client: r.NewClient(w), buf: buf, w: w}
+}
+
+func (tc *testClient) run(args ...string) string {
+	tc.buf.Reset()
+	tc.Dispatch(context.Background(), args)
+	tc.w.Flush()
+	return tc.buf.String()
+}
 
 func TestCommands(t *testing.T) {
 	tests := []struct {
@@ -168,13 +192,9 @@ func TestCommands(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := NewRegistry(store.New())
+			c := newTestClient(newTestRegistry())
 			for _, s := range tt.steps {
-				var buf bytes.Buffer
-				w := resp.NewWriter(&buf)
-				r.Dispatch(context.Background(), w, s.args)
-				w.Flush()
-				if got := buf.String(); got != s.want {
+				if got := c.run(s.args...); got != s.want {
 					t.Errorf("%q: got %q, want %q", s.args, got, s.want)
 				}
 			}
@@ -183,17 +203,9 @@ func TestCommands(t *testing.T) {
 }
 
 func TestPTTL(t *testing.T) {
-	r := NewRegistry(store.New())
-	run := func(args ...string) string {
-		var buf bytes.Buffer
-		w := resp.NewWriter(&buf)
-		r.Dispatch(context.Background(), w, args)
-		w.Flush()
-		return buf.String()
-	}
-
-	run("SET", "k", "v", "PX", "5000")
-	got := strings.TrimSuffix(strings.TrimPrefix(run("PTTL", "k"), ":"), "\r\n")
+	c := newTestClient(newTestRegistry())
+	c.run("SET", "k", "v", "PX", "5000")
+	got := strings.TrimSuffix(strings.TrimPrefix(c.run("PTTL", "k"), ":"), "\r\n")
 	ms, err := strconv.Atoi(got)
 	if err != nil || ms <= 4000 || ms > 5000 {
 		t.Errorf("PTTL = %q, want a value in (4000, 5000]", got)
@@ -201,9 +213,9 @@ func TestPTTL(t *testing.T) {
 }
 
 func TestBlocks(t *testing.T) {
-	r := NewRegistry(store.New())
+	c := newTestRegistry().NewClient(nil)
 	for name, want := range map[string]bool{"BLPOP": true, "brpop": true, "LPOP": false, "nope": false} {
-		if got := r.Blocks([]string{name}); got != want {
+		if got := c.Blocks([]string{name}); got != want {
 			t.Errorf("Blocks(%s) = %v, want %v", name, got, want)
 		}
 	}

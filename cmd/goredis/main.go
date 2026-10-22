@@ -10,6 +10,8 @@ import (
 	"syscall"
 
 	"github.com/AbhishekBasnet/goredis/internal/command"
+	"github.com/AbhishekBasnet/goredis/internal/pubsub"
+	"github.com/AbhishekBasnet/goredis/internal/resp"
 	"github.com/AbhishekBasnet/goredis/internal/server"
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
@@ -27,7 +29,8 @@ func main() {
 	var bg sync.WaitGroup
 	bg.Go(func() { st.RunExpiry(ctx, store.DefaultExpiryInterval) })
 
-	srv := server.New(*addr, log, command.NewRegistry(st))
+	cmds := command.NewRegistry(st, pubsub.NewBroker(pubsub.DefaultBufferSize))
+	srv := server.New(*addr, log, func(w *resp.Writer) server.Session { return cmds.NewClient(w) })
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Run() }()
 

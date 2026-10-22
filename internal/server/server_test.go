@@ -8,14 +8,20 @@ import (
 	"time"
 
 	"github.com/AbhishekBasnet/goredis/internal/command"
+	"github.com/AbhishekBasnet/goredis/internal/pubsub"
+	"github.com/AbhishekBasnet/goredis/internal/resp"
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
-func startHandler(t *testing.T, st *store.Store) (net.Conn, <-chan struct{}) {
+func newRegistry(st *store.Store) *command.Registry {
+	return command.NewRegistry(st, pubsub.NewBroker(16))
+}
+
+func startHandler(t *testing.T, reg *command.Registry) (net.Conn, <-chan struct{}) {
 	t.Helper()
 
 	client, srvConn := net.Pipe()
-	s := New("", slog.New(slog.DiscardHandler), command.NewRegistry(st))
+	s := New("", slog.New(slog.DiscardHandler), func(w *resp.Writer) Session { return reg.NewClient(w) })
 
 	done := make(chan struct{})
 	go func() {
@@ -51,7 +57,7 @@ func TestHandle(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, done := startHandler(t, store.New())
+			client, done := startHandler(t, newRegistry(store.New()))
 			send(client, tt.input)
 
 			got := make([]byte, len(tt.want))
@@ -73,7 +79,7 @@ func TestHandle(t *testing.T) {
 }
 
 func TestHandleProtocolError(t *testing.T) {
-	client, done := startHandler(t, store.New())
+	client, done := startHandler(t, newRegistry(store.New()))
 	send(client, "*abc\r\nPING\r\n")
 
 	got, err := io.ReadAll(client)
@@ -104,7 +110,7 @@ func readExactly(t *testing.T, client net.Conn, want string) {
 
 func TestBlockingFlushesFirst(t *testing.T) {
 	st := store.New()
-	client, _ := startHandler(t, st)
+	client, _ := startHandler(t, newRegistry(st))
 	send(client, "PING\r\nBLPOP k 0\r\n")
 
 	readExactly(t, client, "+PONG\r\n")
@@ -118,7 +124,7 @@ func TestBlockingFlushesFirst(t *testing.T) {
 
 func TestBlockedClientHangsUp(t *testing.T) {
 	st := store.New()
-	client, done := startHandler(t, st)
+	client, done := startHandler(t, newRegistry(st))
 	send(client, "PING\r\nBLPOP k 0\r\n")
 	readExactly(t, client, "+PONG\r\n")
 
@@ -133,4 +139,65 @@ func TestBlockedClientHangsUp(t *testing.T) {
 	if n, _ := st.LLen("k"); n != 1 {
 		t.Errorf("LLEN = %d, want 1: the element went to the departed client", n)
 	}
+}
+
+func TestPubSubOverConnections(t *testing.T) {
+	reg := newRegistry(store.New())
+	sub, _ := startHandler(t, reg)
+	pub, _ := startHandler(t, reg)
+
+	send(sub, "SUBSCRIBE news\r\n")
+	readExactly(t, sub, "*3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n")
+
+	send(pub, "PUBLISH news hello\r\nPUBLISH news world\r\n")
+	readExactly(t, pub, ":1\r\n:1\r\n")
+	readExactly(t, sub, "*3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$5\r\nhello\r\n*3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$5\r\nworld\r\n")
+
+	send(sub, "GET k\r\nUNSUBSCRIBE\r\nGET k\r\n")
+	readExactly(t, sub, "-ERR Can't execute 'get': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n"+
+		"*3\r\n$11\r\nunsubscribe\r\n$4\r\nnews\r\n:0\r\n"+
+		"$-1\r\n")
+}
+
+func TestSubscriberHangsUp(t *testing.T) {
+	reg := newRegistry(store.New())
+	sub, subDone := startHandler(t, reg)
+	pub, _ := startHandler(t, reg)
+
+	send(sub, "SUBSCRIBE a b\r\n")
+	readExactly(t, sub, "*3\r\n$9\r\nsubscribe\r\n$1\r\na\r\n:1\r\n*3\r\n$9\r\nsubscribe\r\n$1\r\nb\r\n:2\r\n")
+	sub.Close()
+	<-subDone
+
+	send(pub, "PUBLISH a x\r\n")
+	readExactly(t, pub, ":0\r\n")
+}
+
+func TestSlowSubscriberDisconnected(t *testing.T) {
+	reg := command.NewRegistry(store.New(), pubsub.NewBroker(2))
+	sub, subDone := startHandler(t, reg)
+	pub, _ := startHandler(t, reg)
+
+	send(sub, "SUBSCRIBE c\r\n")
+	readExactly(t, sub, "*3\r\n$9\r\nsubscribe\r\n$1\r\nc\r\n:1\r\n")
+
+	start := time.Now()
+	for range 10 {
+		send(pub, "PUBLISH c x\r\n")
+		reply := make([]byte, 4)
+		if _, err := io.ReadFull(pub, reply); err != nil {
+			t.Fatalf("publisher blocked: %v", err)
+		}
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("10 publishes took %v: the slow subscriber held them up", d)
+	}
+
+	select {
+	case <-subDone:
+	case <-time.After(time.Second):
+		t.Fatal("slow subscriber was not disconnected")
+	}
+	send(pub, "PUBLISH c x\r\n")
+	readExactly(t, pub, ":0\r\n")
 }

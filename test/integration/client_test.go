@@ -13,11 +13,18 @@ import (
 	"time"
 
 	"github.com/AbhishekBasnet/goredis/internal/command"
+	"github.com/AbhishekBasnet/goredis/internal/pubsub"
+	"github.com/AbhishekBasnet/goredis/internal/resp"
 	"github.com/AbhishekBasnet/goredis/internal/server"
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
 func startServer(t *testing.T) string {
+	t.Helper()
+	return startServerWithBuffer(t, pubsub.DefaultBufferSize)
+}
+
+func startServerWithBuffer(t *testing.T, pubsubBuffer int) string {
 	t.Helper()
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -28,7 +35,8 @@ func startServer(t *testing.T) string {
 	ctx, cancel := context.WithCancel(context.Background())
 	go st.RunExpiry(ctx, 10*time.Millisecond)
 
-	srv := server.New(ln.Addr().String(), slog.New(slog.DiscardHandler), command.NewRegistry(st))
+	cmds := command.NewRegistry(st, pubsub.NewBroker(pubsubBuffer))
+	srv := server.New(ln.Addr().String(), slog.New(slog.DiscardHandler), func(w *resp.Writer) server.Session { return cmds.NewClient(w) })
 	go srv.Serve(ln)
 	t.Cleanup(func() {
 		ln.Close()

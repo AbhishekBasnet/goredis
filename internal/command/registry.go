@@ -6,41 +6,46 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/AbhishekBasnet/goredis/internal/resp"
+	"github.com/AbhishekBasnet/goredis/internal/pubsub"
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
-type Handler func(ctx context.Context, st *store.Store, w *resp.Writer, args []string)
+type Handler func(ctx context.Context, c *Client, args []string)
 
 type Command struct {
 	Name     string
 	Arity    int
 	Handler  Handler
 	Blocking bool
+	PubSub   bool
 }
 
 type Registry struct {
-	store *store.Store
-	cmds  map[string]Command
+	store  *store.Store
+	broker *pubsub.Broker
+	cmds   map[string]Command
 }
 
-func NewRegistry(st *store.Store) *Registry {
-	r := &Registry{store: st, cmds: make(map[string]Command)}
+func NewRegistry(st *store.Store, broker *pubsub.Broker) *Registry {
+	r := &Registry{store: st, broker: broker, cmds: make(map[string]Command)}
 	for _, c := range []Command{
-		{Name: "ping", Arity: -1, Handler: ping},
+		{Name: "ping", Arity: -1, Handler: ping, PubSub: true},
 		{Name: "echo", Arity: 2, Handler: echo},
+
 		{Name: "get", Arity: 2, Handler: get},
 		{Name: "set", Arity: -3, Handler: set},
 		{Name: "incr", Arity: 2, Handler: incr},
 		{Name: "decr", Arity: 2, Handler: decr},
 		{Name: "mget", Arity: -2, Handler: mget},
 		{Name: "mset", Arity: -3, Handler: mset},
+
 		{Name: "del", Arity: -2, Handler: del},
 		{Name: "exists", Arity: -2, Handler: exists},
 		{Name: "expire", Arity: 3, Handler: expire},
 		{Name: "ttl", Arity: 2, Handler: ttl},
 		{Name: "pttl", Arity: 2, Handler: pttl},
 		{Name: "persist", Arity: 2, Handler: persist},
+
 		{Name: "lpush", Arity: -3, Handler: lpush},
 		{Name: "rpush", Arity: -3, Handler: rpush},
 		{Name: "lpop", Arity: -2, Handler: lpop},
@@ -49,27 +54,14 @@ func NewRegistry(st *store.Store) *Registry {
 		{Name: "lrange", Arity: 4, Handler: lrange},
 		{Name: "blpop", Arity: -3, Handler: blpop, Blocking: true},
 		{Name: "brpop", Arity: -3, Handler: brpop, Blocking: true},
+
+		{Name: "subscribe", Arity: -2, Handler: subscribe, PubSub: true},
+		{Name: "unsubscribe", Arity: -1, Handler: unsubscribe, PubSub: true},
+		{Name: "publish", Arity: 3, Handler: publish},
 	} {
 		r.cmds[c.Name] = c
 	}
 	return r
-}
-
-func (r *Registry) Dispatch(ctx context.Context, w *resp.Writer, args []string) {
-	cmd, ok := r.cmds[strings.ToLower(args[0])]
-	if !ok {
-		w.WriteError(unknownCommand(args))
-		return
-	}
-	if !arityOK(cmd.Arity, len(args)) {
-		w.WriteError(fmt.Sprintf("ERR wrong number of arguments for '%s' command", cmd.Name))
-		return
-	}
-	cmd.Handler(ctx, r.store, w, args)
-}
-
-func (r *Registry) Blocks(args []string) bool {
-	return r.cmds[strings.ToLower(args[0])].Blocking
 }
 
 func arityOK(arity, n int) bool {
@@ -88,10 +80,10 @@ func unknownCommand(args []string) string {
 	return b.String()
 }
 
-func writeStoreError(w *resp.Writer, err error) {
+func (c *Client) writeStoreError(err error) {
 	code := "ERR "
 	if errors.Is(err, store.ErrWrongType) {
 		code = "WRONGTYPE "
 	}
-	w.WriteError(code + err.Error())
+	c.w.WriteError(code + err.Error())
 }

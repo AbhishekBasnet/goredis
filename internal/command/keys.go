@@ -4,49 +4,48 @@ import (
 	"context"
 	"time"
 
-	"github.com/AbhishekBasnet/goredis/internal/resp"
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
-func del(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
-	w.WriteInteger(int64(st.Del(args[1:]...)))
+func del(_ context.Context, c *Client, args []string) {
+	c.w.WriteInteger(int64(c.store.Del(args[1:]...)))
 }
 
-func exists(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
-	w.WriteInteger(int64(st.Exists(args[1:]...)))
+func exists(_ context.Context, c *Client, args []string) {
+	c.w.WriteInteger(int64(c.store.Exists(args[1:]...)))
 }
 
-func expire(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
+func expire(_ context.Context, c *Client, args []string) {
 	ttl, err := parseTTL(args[2], time.Second, "expire")
 	if err != nil {
-		w.WriteError(err.Error())
+		c.w.WriteError(err.Error())
 		return
 	}
-	w.WriteInteger(boolInt(st.Expire(args[1], ttl)))
+	c.w.WriteInteger(boolInt(c.store.Expire(args[1], ttl)))
 }
 
-func ttl(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
-	writeTTL(st, w, args[1], time.Second)
+func ttl(_ context.Context, c *Client, args []string) {
+	c.writeTTL(args[1], time.Second)
 }
 
-func pttl(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
-	writeTTL(st, w, args[1], time.Millisecond)
+func pttl(_ context.Context, c *Client, args []string) {
+	c.writeTTL(args[1], time.Millisecond)
 }
 
-func writeTTL(st *store.Store, w *resp.Writer, key string, unit time.Duration) {
-	d, ok := st.TTL(key)
+func (c *Client) writeTTL(key string, unit time.Duration) {
+	d, ok := c.store.TTL(key)
 	switch {
 	case !ok:
-		w.WriteInteger(-2)
+		c.w.WriteInteger(-2)
 	case d == store.NoExpiry:
-		w.WriteInteger(-1)
+		c.w.WriteInteger(-1)
 	default:
-		w.WriteInteger(int64(d.Round(unit) / unit))
+		c.w.WriteInteger(int64(d.Round(unit) / unit))
 	}
 }
 
-func persist(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
-	w.WriteInteger(boolInt(st.Persist(args[1])))
+func persist(_ context.Context, c *Client, args []string) {
+	c.w.WriteInteger(boolInt(c.store.Persist(args[1])))
 }
 
 func boolInt(b bool) int64 {
