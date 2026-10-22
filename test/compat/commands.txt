@@ -1,0 +1,80 @@
+DEL s n neg l l2 t m1 m2 e p q str list empty
+PING
+PING hello
+ECHO "hello world"
+GET s
+SET s value
+GET s
+SET s other
+GET s
+SET s v EX 100
+TTL s
+SET s v PX 100000
+TTL s
+SET s v EX 0
+SET s v EX ten
+SET s v EX 10 PX 100
+SET s
+INCR n
+INCR n
+DECR n
+DECR neg
+GET n
+INCR s
+SET big 9223372036854775807
+INCR big
+SET plus +1
+INCR plus
+MSET m1 a m2 b
+MGET m1 nope m2
+MSET m1
+EXISTS m1 m1 m2 nope
+DEL m1 nope
+EXISTS m1
+EXPIRE nope 10
+SET e v
+TTL e
+EXPIRE e 50
+TTL e
+PERSIST e
+PERSIST e
+TTL e
+EXPIRE e -1
+EXISTS e
+TTL nope
+PTTL nope
+RPUSH l a b c
+LPUSH l z
+LRANGE l 0 -1
+LRANGE l 1 2
+LRANGE l -2 -1
+LRANGE l 5 10
+LRANGE l x 1
+LLEN l
+LLEN nope
+LPOP l
+RPOP l
+LPOP l 2
+LPOP l 0
+LPOP l -1
+LPOP nope
+LPOP nope 2
+LLEN l
+EXISTS l
+RPUSH l2 x
+BLPOP nope l2 0
+BLPOP nope 0.1
+BLPOP l2 -1
+BLPOP l2 soon
+SET str text
+LPUSH str x
+LLEN str
+GET l2
+RPUSH list a
+GET list
+INCR list
+MGET str list
+PUBLISH nobody hi
+FOO bar baz
+get
+SAVE now
