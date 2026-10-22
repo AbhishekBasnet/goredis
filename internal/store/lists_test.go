@@ -19,7 +19,6 @@ func TestPushPop(t *testing.T) {
 	if n, _ := s.Push("l", false, "x", "y"); n != 5 {
 		t.Errorf("RPUSH returned %d, want 5", n)
 	}
-	// LPUSH a b c pushes one at a time, so the list reads c b a.
 	if got, _ := s.LRange("l", 0, -1); !slices.Equal(got, []string{"c", "b", "a", "x", "y"}) {
 		t.Errorf("list = %q", got)
 	}
@@ -34,7 +33,6 @@ func TestPushPop(t *testing.T) {
 		t.Errorf("LPOP 10 = %q, want the 2 that are left", got)
 	}
 
-	// Popping the last element deletes the key.
 	if n := s.Exists("l"); n != 0 {
 		t.Error("empty list still exists")
 	}
@@ -93,11 +91,9 @@ func TestWrongType(t *testing.T) {
 		}
 	}
 
-	// MGET treats a list as missing rather than failing.
 	if _, found := s.MGet("list"); found[0] {
 		t.Error("MGet found a list")
 	}
-	// SET replaces a list without complaint.
 	s.Set("list", "now a string", 0)
 	if v, _, err := s.Get("list"); err != nil || v != "now a string" {
 		t.Errorf("Get after SET = %q, %v", v, err)
@@ -111,7 +107,6 @@ func TestBPopImmediate(t *testing.T) {
 	s := New()
 	s.Push("b", false, "1", "2")
 
-	// Keys are checked in order: "a" is missing, so "b" is served.
 	p, ok, err := s.BPop(context.Background(), []string{"a", "b"}, true, time.Second)
 	if err != nil || !ok || p != (Popped{"b", "1"}) {
 		t.Errorf("BPop = %+v, %v, %v", p, ok, err)
@@ -152,14 +147,12 @@ func TestBPopCancel(t *testing.T) {
 	if len(s.waiters) != 0 {
 		t.Error("cancelled waiter is still queued")
 	}
-	// The element must stay in the list for the next client, not vanish.
 	s.Push("k", false, "v")
 	if n, _ := s.LLen("k"); n != 1 {
 		t.Errorf("LLEN = %d, want 1", n)
 	}
 }
 
-// waitForWaiters blocks until n clients are queued on key.
 func waitForWaiters(t *testing.T, s *Store, key string, n int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
@@ -177,8 +170,6 @@ func waitForWaiters(t *testing.T, s *Store, key string, n int) {
 	}
 }
 
-// Blocked clients are served in the order they started waiting, and a
-// client waiting on several keys is served by whichever is pushed first.
 func TestBPopFIFOAndMultiKey(t *testing.T) {
 	s := New()
 	results := make(chan string, 3)
@@ -200,8 +191,6 @@ func TestBPopFIFOAndMultiKey(t *testing.T) {
 	if n != 2 {
 		t.Errorf("RPUSH returned %d, want 2 (length before serving)", n)
 	}
-	// Who got what proves the order; the order the goroutines report back
-	// in does not, so sort before comparing.
 	served := []string{<-results, <-results}
 	slices.Sort(served)
 	if want := []string{"first=a", "second=b"}; !slices.Equal(served, want) {
@@ -220,8 +209,6 @@ func TestBPopFIFOAndMultiKey(t *testing.T) {
 	}
 }
 
-// The plan's race test: many producers push, many consumers block-pop, and
-// every element must arrive exactly once. Run it with -race.
 func TestBPopProducersConsumers(t *testing.T) {
 	const producers, consumers, perProducer = 10, 10, 500
 	const total = producers * perProducer
@@ -242,7 +229,7 @@ func TestBPopProducersConsumers(t *testing.T) {
 					return
 				}
 				if !ok {
-					return // cancelled: the test is over
+					return
 				}
 				got <- p.Value
 			}

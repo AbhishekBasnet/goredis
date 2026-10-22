@@ -11,8 +11,6 @@ import (
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
-// startHandler runs handle on one end of an in-memory connection and returns
-// the other end, plus a channel that is closed when the handler returns.
 func startHandler(t *testing.T, st *store.Store) (net.Conn, <-chan struct{}) {
 	t.Helper()
 
@@ -30,8 +28,6 @@ func startHandler(t *testing.T, st *store.Store) (net.Conn, <-chan struct{}) {
 	return client, done
 }
 
-// send writes input in the background: net.Pipe is unbuffered, so a Write
-// blocks until the handler reads it, and the test must be free to read replies.
 func send(client net.Conn, input string) {
 	go client.Write([]byte(input))
 }
@@ -76,8 +72,6 @@ func TestHandle(t *testing.T) {
 	}
 }
 
-// After a protocol error the server replies once and closes the connection
-// itself; the PING after the bad header must never be answered.
 func TestHandleProtocolError(t *testing.T) {
 	client, done := startHandler(t, store.New())
 	send(client, "*abc\r\nPING\r\n")
@@ -97,7 +91,6 @@ func TestHandleProtocolError(t *testing.T) {
 	}
 }
 
-// readExactly reads len(want) bytes and compares them with want.
 func readExactly(t *testing.T, client net.Conn, want string) {
 	t.Helper()
 	got := make([]byte, len(want))
@@ -109,31 +102,25 @@ func readExactly(t *testing.T, client net.Conn, want string) {
 	}
 }
 
-// A reply to an earlier pipelined command must not wait in the buffer while
-// BLPOP blocks, and the connection must work normally once BLPOP returns.
 func TestBlockingFlushesFirst(t *testing.T) {
 	st := store.New()
 	client, _ := startHandler(t, st)
 	send(client, "PING\r\nBLPOP k 0\r\n")
 
-	// Without the flush before blocking, this read would time out.
 	readExactly(t, client, "+PONG\r\n")
 
 	st.Push("k", false, "v")
 	readExactly(t, client, "*2\r\n$1\r\nk\r\n$1\r\nv\r\n")
 
-	// The watcher's read deadline must have been cleared.
 	send(client, "PING\r\n")
 	readExactly(t, client, "+PONG\r\n")
 }
 
-// A client that hangs up during BLPOP must leave the queue straight away.
-// Otherwise the next push hands it the element, and the element is lost.
 func TestBlockedClientHangsUp(t *testing.T) {
 	st := store.New()
 	client, done := startHandler(t, st)
 	send(client, "PING\r\nBLPOP k 0\r\n")
-	readExactly(t, client, "+PONG\r\n") // BLPOP is now running
+	readExactly(t, client, "+PONG\r\n")
 
 	client.Close()
 	select {

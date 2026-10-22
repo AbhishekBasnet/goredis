@@ -7,7 +7,6 @@ import (
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
-// PING [message]
 func ping(_ context.Context, _ *store.Store, w *resp.Writer, args []string) {
 	switch len(args) {
 	case 1:
@@ -19,7 +18,6 @@ func ping(_ context.Context, _ *store.Store, w *resp.Writer, args []string) {
 	}
 }
 
-// ECHO message
 func echo(_ context.Context, _ *store.Store, w *resp.Writer, args []string) {
 	w.WriteBulk(args[1])
 }

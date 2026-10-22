@@ -38,7 +38,7 @@ func TestDelExists(t *testing.T) {
 
 func TestMGetMSet(t *testing.T) {
 	s := New()
-	s.MSet("a", "1", "b", "2", "a", "3") // last write wins
+	s.MSet("a", "1", "b", "2", "a", "3")
 
 	vals, found := s.MGet("a", "missing", "b")
 	if want := []string{"3", "", "2"}; !slices.Equal(vals, want) {
@@ -52,7 +52,7 @@ func TestMGetMSet(t *testing.T) {
 func TestIncrBy(t *testing.T) {
 	tests := []struct {
 		name    string
-		initial string // "" means the key is missing
+		initial string
 		delta   int64
 		want    int64
 		wantErr error
@@ -83,7 +83,6 @@ func TestIncrBy(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("got %d, want %d", got, tt.want)
 			}
-			// A failed increment must leave the old value untouched.
 			if err != nil && tt.initial != "" {
 				if v, _, _ := s.Get("k"); v != tt.initial {
 					t.Errorf("value changed to %q after error", v)
@@ -93,8 +92,6 @@ func TestIncrBy(t *testing.T) {
 	}
 }
 
-// Many goroutines incrementing one key must not lose a single update.
-// Without the lock in IncrBy this fails, and `go test -race` reports why.
 func TestIncrByConcurrent(t *testing.T) {
 	const workers, perWorker = 100, 1000
 	s := New()

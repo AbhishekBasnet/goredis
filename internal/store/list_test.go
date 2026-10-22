@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// Run random pushes and pops against both the ring buffer and a plain slice,
-// and check they always agree. This covers wrap-around and growth far more
-// thoroughly than hand-picked cases.
 func TestListMatchesSlice(t *testing.T) {
 	rng := rand.New(rand.NewPCG(1, 2))
 	var l list

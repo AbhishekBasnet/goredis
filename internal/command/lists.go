@@ -9,12 +9,10 @@ import (
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
-// LPUSH key element [element ...]
 func lpush(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	push(st, w, args, true)
 }
 
-// RPUSH key element [element ...]
 func rpush(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	push(st, w, args, false)
 }
@@ -28,18 +26,14 @@ func push(st *store.Store, w *resp.Writer, args []string, front bool) {
 	w.WriteInteger(int64(n))
 }
 
-// LPOP key [count]
 func lpop(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	pop(st, w, args, true)
 }
 
-// RPOP key [count]
 func rpop(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	pop(st, w, args, false)
 }
 
-// pop replies with one bulk string, or with an array when a count is
-// given. A missing key is a null of the matching kind.
 func pop(st *store.Store, w *resp.Writer, args []string, front bool) {
 	if len(args) > 3 {
 		w.WriteError(fmt.Sprintf("ERR wrong number of arguments for '%s' command", strings.ToLower(args[0])))
@@ -75,7 +69,6 @@ func pop(st *store.Store, w *resp.Writer, args []string, front bool) {
 	}
 }
 
-// LLEN key
 func llen(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	n, err := st.LLen(args[1])
 	if err != nil {
@@ -85,7 +78,6 @@ func llen(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	w.WriteInteger(int64(n))
 }
 
-// LRANGE key start stop
 func lrange(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	start, err1 := parseInt(args[2])
 	stop, err2 := parseInt(args[3])
@@ -102,17 +94,14 @@ func lrange(_ context.Context, st *store.Store, w *resp.Writer, args []string) {
 	writeBulks(w, values)
 }
 
-// BLPOP key [key ...] timeout
 func blpop(ctx context.Context, st *store.Store, w *resp.Writer, args []string) {
 	bpop(ctx, st, w, args, true)
 }
 
-// BRPOP key [key ...] timeout
 func brpop(ctx context.Context, st *store.Store, w *resp.Writer, args []string) {
 	bpop(ctx, st, w, args, false)
 }
 
-// bpop replies with [key, element], or a null array on timeout.
 func bpop(ctx context.Context, st *store.Store, w *resp.Writer, args []string, front bool) {
 	timeout, err := parseTimeout(args[len(args)-1])
 	if err != nil {

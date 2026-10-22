@@ -32,13 +32,12 @@ func TestListCommands(t *testing.T) {
 	}
 }
 
-// One client blocks; another pushes; the first wakes with the element.
 func TestBlockingPop(t *testing.T) {
 	addr := startServer(t)
 	waiting, pusher := dial(t, addr), dial(t, addr)
 
 	waiting.send("BLPOP", "nothing", "jobs", "0")
-	time.Sleep(50 * time.Millisecond) // let it block before anything is pushed
+	time.Sleep(50 * time.Millisecond)
 
 	if got := pusher.do("RPUSH", "jobs", "job-1"); got != "(integer) 1" {
 		t.Errorf("RPUSH = %s", got)
@@ -46,7 +45,6 @@ func TestBlockingPop(t *testing.T) {
 	if got := waiting.read(); got != `["jobs" "job-1"]` {
 		t.Errorf("BLPOP = %s", got)
 	}
-	// Served straight to the waiting client: nothing was left in the list.
 	if got := pusher.do("LLEN", "jobs"); got != "(integer) 0" {
 		t.Errorf("LLEN = %s", got)
 	}
@@ -64,12 +62,6 @@ func TestBlockingPopTimeout(t *testing.T) {
 	}
 }
 
-// Many producer and consumer connections share one queue. Every job must
-// be delivered exactly once.
-//
-// Consumers stop when they receive a "stop" element. Producers push one stop
-// per consumer, after all real jobs. Each consumer exits on its first stop,
-// so each stop goes to a different consumer and none is left waiting.
 func TestProducersConsumersOverTCP(t *testing.T) {
 	const producers, consumers, perProducer = 8, 8, 200
 	addr := startServer(t)

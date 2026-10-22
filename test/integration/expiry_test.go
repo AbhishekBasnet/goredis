@@ -5,7 +5,6 @@ import (
 	"time"
 )
 
-// Uses the real clock, so the TTLs are short and the checks leave slack.
 func TestExpiry(t *testing.T) {
 	c := dial(t, startServer(t))
 

@@ -1,5 +1,3 @@
-// Package integration starts a real goredis server on a random port and
-// drives it over TCP with raw RESP, exactly as redis-cli would.
 package integration
 
 import (
@@ -19,11 +17,9 @@ import (
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
-// startServer runs a fresh server with an empty store and returns its address.
 func startServer(t *testing.T) string {
 	t.Helper()
 
-	// Port 0: the OS picks a free port, so tests never clash.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -59,8 +55,6 @@ func dial(t *testing.T, addr string) *client {
 	return &client{t: t, conn: conn, r: bufio.NewReader(conn)}
 }
 
-// send writes one command as an array of bulk strings without waiting for
-// the reply. Call it several times and then read() to pipeline.
 func (c *client) send(args ...string) {
 	c.t.Helper()
 
@@ -74,15 +68,12 @@ func (c *client) send(args ...string) {
 	}
 }
 
-// do sends one command and returns its reply.
 func (c *client) do(args ...string) string {
 	c.t.Helper()
 	c.send(args...)
 	return c.read()
 }
 
-// read returns one reply, formatted the way redis-cli prints it:
-// OK, "value", (nil), (integer) 3, (error) ERR ..., [a b] for arrays.
 func (c *client) read() string {
 	c.t.Helper()
 

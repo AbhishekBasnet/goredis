@@ -9,13 +9,8 @@ import (
 	"github.com/AbhishekBasnet/goredis/internal/resp"
 )
 
-// Dispatcher runs commands. It is defined here, where it is used: the
-// server needs only these two methods, and *command.Registry provides them.
 type Dispatcher interface {
-	// Dispatch runs one command and writes its reply to w.
 	Dispatch(ctx context.Context, w *resp.Writer, args []string)
-
-	// Blocks reports whether the command may wait for another client.
 	Blocks(args []string) bool
 }
 
@@ -29,7 +24,6 @@ func New(addr string, log *slog.Logger, cmds Dispatcher) *Server {
 	return &Server{addr: addr, log: log, cmds: cmds}
 }
 
-// Run listens on the configured address and serves until accepting fails.
 func (s *Server) Run() error {
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
@@ -38,8 +32,6 @@ func (s *Server) Run() error {
 	return s.Serve(ln)
 }
 
-// Serve accepts connections on ln. Tests use it with a listener on port 0,
-// so the OS picks a free port.
 func (s *Server) Serve(ln net.Listener) error {
 	defer ln.Close()
 

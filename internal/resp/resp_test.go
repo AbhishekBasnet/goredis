@@ -39,8 +39,6 @@ func TestReadCommand(t *testing.T) {
 	}
 }
 
-// A TCP read can return any number of bytes. OneByteReader is the worst case:
-// every Read returns a single byte, so a command arrives in many pieces.
 func TestReadCommandPartialReads(t *testing.T) {
 	input := "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"
 	r := NewReader(iotest.OneByteReader(strings.NewReader(input)))
@@ -54,8 +52,6 @@ func TestReadCommandPartialReads(t *testing.T) {
 	}
 }
 
-// Pipelining: several commands arrive in one packet. Each ReadCommand call
-// must return exactly one of them, and Buffered must report the rest.
 func TestReadCommandPipelined(t *testing.T) {
 	input := "*1\r\n$4\r\nPING\r\n" + "*2\r\n$4\r\nECHO\r\n$1\r\na\r\n" + "PING\r\n"
 	r := NewReader(strings.NewReader(input))
@@ -149,7 +145,6 @@ func TestWriter(t *testing.T) {
 	}
 }
 
-// encode writes args the way a client library would: an array of bulk strings.
 func encode(args []string) []byte {
 	var buf bytes.Buffer
 	w := NewWriter(&buf)
@@ -161,10 +156,6 @@ func encode(args []string) []byte {
 	return buf.Bytes()
 }
 
-// FuzzReadCommand feeds random bytes to the reader. It must never panic or
-// hang, and anything it accepts must survive an encode → parse round trip.
-//
-// Run it with: go test -fuzz=FuzzReadCommand ./internal/resp
 func FuzzReadCommand(f *testing.F) {
 	seeds := []string{
 		"*1\r\n$4\r\nPING\r\n",

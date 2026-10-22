@@ -35,7 +35,6 @@ func TestStringCommands(t *testing.T) {
 	}
 }
 
-// Send many commands before reading any reply; they must come back in order.
 func TestPipelining(t *testing.T) {
 	c := dial(t, startServer(t))
 
@@ -50,8 +49,6 @@ func TestPipelining(t *testing.T) {
 	}
 }
 
-// 100 clients INCR the same key at once. Every increment must land exactly
-// once, which only holds if IncrBy is atomic under the store's lock.
 func TestConcurrentIncr(t *testing.T) {
 	const clients, perClient = 100, 50
 	addr := startServer(t)
@@ -73,8 +70,6 @@ func TestConcurrentIncr(t *testing.T) {
 	}
 }
 
-// Keys written by one connection are visible to another: there is one
-// shared store, not one per client.
 func TestSharedStore(t *testing.T) {
 	addr := startServer(t)
 	a, b := dial(t, addr), dial(t, addr)

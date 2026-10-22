@@ -11,7 +11,6 @@ import (
 	"github.com/AbhishekBasnet/goredis/internal/store"
 )
 
-// step is one command and the exact RESP bytes it must reply with.
 type step struct {
 	args []string
 	want string
@@ -183,8 +182,6 @@ func TestCommands(t *testing.T) {
 	}
 }
 
-// PTTL is in milliseconds, so the exact value depends on how long the test
-// took; check that it is in range rather than equal.
 func TestPTTL(t *testing.T) {
 	r := NewRegistry(store.New())
 	run := func(args ...string) string {

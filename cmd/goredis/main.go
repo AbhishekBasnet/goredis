@@ -20,8 +20,6 @@ func main() {
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
-	// ctx is cancelled on Ctrl+C or SIGTERM. Every background goroutine
-	// watches it, so one signal stops them all.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -42,8 +40,6 @@ func main() {
 		log.Info("shutting down")
 	}
 
-	// Stop background work and wait for it, so nothing is cut off midway.
-	// Draining connected clients comes in Stage 8.
 	stop()
 	bg.Wait()
 	log.Info("background tasks stopped")

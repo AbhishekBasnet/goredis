@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// newTestStore returns a store whose clock only moves when advance is called,
-// so expiry tests are exact and never sleep.
 func newTestStore() (s *Store, advance func(time.Duration)) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s = New()
@@ -64,7 +62,6 @@ func TestIncrKeepsTTL(t *testing.T) {
 		t.Errorf("TTL after INCR = %v, want 10s", ttl)
 	}
 	advance(10 * time.Second)
-	// The old value is gone, so INCR starts again from 0, with no TTL.
 	if n, _ := s.IncrBy("n", 1); n != 1 {
 		t.Errorf("INCR on expired key = %d, want 1", n)
 	}
@@ -130,8 +127,6 @@ func TestDelExpired(t *testing.T) {
 	}
 }
 
-// Reads never delete, but expired keys must not stay in memory forever:
-// the active cycle removes them even if nobody touches them again.
 func TestActiveExpire(t *testing.T) {
 	s, advance := newTestStore()
 	for i := range 1000 {
@@ -143,8 +138,6 @@ func TestActiveExpire(t *testing.T) {
 	}
 	advance(time.Second)
 
-	// Each call runs up to 16 rounds of 20 samples, so a few ticks clear
-	// the 1000 expired keys.
 	for range 20 {
 		s.activeExpire()
 	}
@@ -173,10 +166,8 @@ func TestExpireSampleStopsAtLimit(t *testing.T) {
 	}
 }
 
-// The background goroutine must actually run on its ticker, and must
-// return when its context is cancelled; otherwise it leaks.
 func TestRunExpiryLifecycle(t *testing.T) {
-	s := New() // real clock: this test exercises the real ticker
+	s := New()
 	s.Set("k", "v", time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
