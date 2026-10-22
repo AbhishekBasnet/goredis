@@ -39,6 +39,15 @@ func (r *Reader) Buffered() int {
 	return r.rd.Buffered()
 }
 
+// WaitReadable blocks until at least one more byte has arrived, without
+// consuming it, and returns nil; or until reading fails, and returns the
+// error. The server uses it to notice a client hanging up while a blocking
+// command runs. It must not run at the same time as ReadCommand.
+func (r *Reader) WaitReadable() error {
+	_, err := r.rd.Peek(1)
+	return err
+}
+
 // ReadCommand returns the next command as a list of arguments, e.g.
 // ["SET", "key", "value"]. It never returns an empty command.
 //
